@@ -70,7 +70,7 @@ struct GratingCalibration {
   float slope;
 };
 
-constexpr GratingCalibration VIS_CAL        = { 350.0f, 1000.0f, 371.9450f, 1.1190f };
+constexpr GratingCalibration VIS_CAL        = { 350.0f, 1000.0f, 374.0828f, 1.1164f };
 constexpr GratingCalibration IR_CAL         = { 587.0f, 2000.0f, 4715.4390f, 0.5099f };
 constexpr float              SWITCH_MIN_NM       = 350.0f;
 constexpr float              SWITCH_MAX_NM       = 2000.0f;
