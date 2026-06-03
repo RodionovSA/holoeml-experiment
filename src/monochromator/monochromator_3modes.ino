@@ -1,209 +1,291 @@
-///////////////////////////////////////////////////////
-//Library variable definitions 
-///////////////////////////////////////////////////////
+// =====================================================================
+// monochromator_3modes.ino
+//
+// Firmware for the Arduino-driven monochromator stepper.
+// Controls a single stepper via AccelStepper (DRIVER mode), homes
+// against a photodiode flag, and moves to a requested wavelength on
+// command. Designed to be driven over serial by the Python wrapper in
+// src/monochromator/mono_class.py.
+//
+// Wiring:
+//   D8  -> stepper DIR
+//   D9  -> stepper STEP
+//   D3  -> aux LED              (configured as OUTPUT; not currently driven)
+//   D5  -> home-flag LED        (configured as OUTPUT; not currently driven)
+//   A0  -> aux photodiode       (configured as INPUT; not read by this sketch)
+//   A5  -> home-flag photodiode (used for homing; >threshold == blocked)
+//
+// Serial protocol (9600 baud, '\n' terminated, ASCII):
+//
+//   in : home
+//   out: INFO: homing
+//        ADC: <value>
+//        OK: homed
+//
+//   in : mode <0|1|2>           (0=VIS, 1=IR, 2=SWITCH)
+//   out: OK: mode <VIS|IR|SWITCH>
+//        ERR: invalid_mode
+//
+//   in : wavelength <float_nm>
+//   out: INFO: moving <nm>
+//        OK: wavelength <nm>
+//        ERR: out_of_range <min_nm> <max_nm>
+//        ERR: no_mode               (mode not selected yet)
+//        OK: stopped                (after `stop` during a move)
+//
+//   in : stop                       (interrupts an in-progress move)
+//   out: OK: stopped
+//
+//   in : status
+//   out: INFO: mode=<VIS|IR|SWITCH|none> homed=<0|1> pos=<steps>
+//
+// Calibration is a linear fit per grating range:
+//   steps = (wavelength_nm + offset) / slope
+// Recalibration requires reflashing.
+// =====================================================================
 
 #include <AccelStepper.h>
 
-const int dirPin = 8;
-const int stepPin = 9;
-const int photodiodeS1Pin = A0;
-const int photodiodeS2Pin = A5;
-const int ledS1Pin = 3;
-const int ledS2Pin = 5;
+// ---- Pin assignments ------------------------------------------------
+constexpr uint8_t STEPPER_DIR_PIN     = 8;
+constexpr uint8_t STEPPER_STEP_PIN    = 9;
+constexpr uint8_t AUX_PHOTODIODE_PIN  = A0;
+constexpr uint8_t HOME_PHOTODIODE_PIN = A5;
+constexpr uint8_t AUX_LED_PIN         = 3;
+constexpr uint8_t HOME_LED_PIN        = 5;
 
-int currentStep = 0; // Track the current step position
+// ---- Tuning constants -----------------------------------------------
+constexpr long  SERIAL_BAUD          = 9600;
+constexpr float STEPPER_MAX_SPEED    = 500.0f;
+constexpr float STEPPER_ACCELERATION = 50.0f;
+constexpr int   PHOTODIODE_THRESHOLD = 300;     // ADC counts; >threshold == flag blocked
+constexpr float HOMING_SEEK_SPEED    = 50.0f;   // steps/sec; slow for edge accuracy
+constexpr long  HOMING_BACKOFF_STEPS = 50;      // forward margin past unblocked edge
 
-#define motorInterfaceType 1
+// ---- Wavelength -> step calibration ---------------------------------
+struct GratingCalibration {
+  float minNm;
+  float maxNm;
+  float offset;
+  float slope;
+};
 
-// Creates an instance
-AccelStepper myStepper(motorInterfaceType, stepPin, dirPin);
+constexpr GratingCalibration VIS_CAL        = { 350.0f, 1000.0f, 377.2128f, 1.1164f };
+constexpr GratingCalibration IR_CAL         = { 587.0f, 2000.0f, 4715.4390f, 0.5099f };
+constexpr float              SWITCH_MIN_NM       = 350.0f;
+constexpr float              SWITCH_MAX_NM       = 2000.0f;
+constexpr float              SWITCH_CROSSOVER_NM = 650.0f;
+// SWITCH mode uses a slightly different VIS fit below the crossover and IR_CAL above.
+constexpr GratingCalibration SWITCH_VIS_CAL = { SWITCH_MIN_NM, SWITCH_CROSSOVER_NM, 389.2407f, 1.1127f };
 
-bool emergencyStop = false; // Variable to track emergency stop state
-int gratingMode = 0; // 0: VIS, 1: IR, 2: Both with switch at 650 nm
+// ---- State ----------------------------------------------------------
+enum class GratingMode : uint8_t { VIS = 0, IR = 1, SWITCH = 2, NONE = 255 };
 
-///////////////////////////////////////////////////////
-//Setup. 
-//This is executed when the Arduino is initialized with the initialize_arduino() method.
-///////////////////////////////////////////////////////
+AccelStepper stepper(AccelStepper::DRIVER, STEPPER_STEP_PIN, STEPPER_DIR_PIN);
+GratingMode  currentMode = GratingMode::NONE;
+bool         motorHomed  = false;
 
+// ---- Forward declarations -------------------------------------------
+void homeMotor();
+void handleModeCommand(const String& input);
+void handleWavelengthCommand(const String& input);
+void reportStatus();
+
+// =====================================================================
+// Setup
+// =====================================================================
 void setup() {
-  // Initialize Serial Communication --> 9600 bits are transmitted each second
-  Serial.begin(9600);
+  Serial.begin(SERIAL_BAUD);
 
-  // Stepper motor setup
-  myStepper.setMaxSpeed(500);
-  myStepper.setAcceleration(50);
-      
-  // Set pin modes
-  pinMode(dirPin, OUTPUT);
-  pinMode(stepPin, OUTPUT);
-  pinMode(photodiodeS1Pin, INPUT);
-  pinMode(photodiodeS2Pin, INPUT);
-  pinMode(ledS1Pin, OUTPUT);
-  pinMode(ledS2Pin, OUTPUT); 
+  stepper.setMaxSpeed(STEPPER_MAX_SPEED);
+  stepper.setAcceleration(STEPPER_ACCELERATION);
 
+  pinMode(AUX_PHOTODIODE_PIN,  INPUT);
+  pinMode(HOME_PHOTODIODE_PIN, INPUT);
+  pinMode(AUX_LED_PIN,         OUTPUT);
+  pinMode(HOME_LED_PIN,        OUTPUT);
 
-  // Ask for the homing command
-  Serial.println("Your Monochromator is now initialized and on.");
-  Serial.println("Before starting operation please first home the motor.");
+  Serial.println("INFO: monochromator initialized; send `home` to start");
 }
 
-//////////////////////////////////////////////////////
-// Loop function
-//After initizalization the loop() function is executed constantly and it waits 
-// commands so it can take actions
-///////////////////////////////////////////////////////
-
-
+// =====================================================================
+// Main loop: dispatch one serial command per iteration
+// =====================================================================
 void loop() {
-  //here we check constantly if there is some information waiting in the serial communication
-  if (Serial.available() > 0) {
-    String input = Serial.readStringUntil('\n'); // Read the input from Serial Monitor
-    input.trim(); // Trim any leading/trailing whitespace
+  if (Serial.available() <= 0) return;
 
-    // Handle command and update state logic
-    if (input == "home") {
-      Serial.println("Homing command received.");
-      Serial.flush();  // Ensure the immediate response is sent out
-      homeStepperMotor(); //this is the homing function, defined below the loop 
-    } else if (input == "mode_selected") { 
-    //mode_slected just takes the value of the prefered mode for work
-    while (true) {
-            String modeInput = Serial.readStringUntil('\n');
-            modeInput.trim();
-            int modeSelection = modeInput.toInt();
-            if (modeSelection == 0 || modeSelection == 1 || modeSelection == 2) {
-                gratingMode = modeSelection;
-                Serial.print("Grating mode selected. You are now operating with the ");
-                if (gratingMode == 0) {
-                    Serial.println("VIS Grating");
-                } else if (gratingMode == 1) {
-                    Serial.println("IR Grating");
-                } else if (gratingMode == 2) {
-                    Serial.println("Switch Mode");
-                }
-                break;  // Exit the loop once a valid mode is received
-            } else {
-                Serial.println("Invalid selection. Please choose an existing operating mode:");
-            }
-      }
-    } else if (input.startsWith("wavelength_selected")) {
-      //receiving of command to move to a specific wavelength along with 
-      //the number of the specific wavelength
-      float targetWavelength = input.substring(20).toFloat(); // Extract wavelength value
-      //Serial.println("command received."); //<-- command for debugging if needed
-      moveToWavelength(targetWavelength); // this is move to function, defined after the loop
-    }
+  String input = Serial.readStringUntil('\n');
+  input.trim();
+  if (input.length() == 0) return;
+
+  if (input == "home") {
+    homeMotor();
+  } else if (input.startsWith("mode")) {
+    handleModeCommand(input);
+  } else if (input.startsWith("wavelength")) {
+    handleWavelengthCommand(input);
+  } else if (input == "status") {
+    reportStatus();
+  } else if (input == "stop") {
+    // No move in progress to interrupt; acknowledge anyway so the
+    // wrapper has consistent semantics for `stop`.
+    Serial.println("OK: stopped");
+  } else {
+    Serial.print("ERR: unknown_command ");
+    Serial.println(input);
   }
 }
 
+// =====================================================================
+// Helpers
+// =====================================================================
 
-//////////////////////////////////////////////////////
-// Additionally defined functions, called in the loop
-///////////////////////////////////////////////////////
-
-void homeStepperMotor() {
-    // Check if the photodiode S2 is already blocked (value > 300)
-    if (analogRead(photodiodeS2Pin) > 300) {
-        // Move forward until S2 is unblocked (value <= 300)
-        while (analogRead(photodiodeS2Pin) > 300) {
-            myStepper.move(100);
-            myStepper.run();
-        }
-        // Move a little more to ensure proper unblocking
-        myStepper.move(50);
-        while (myStepper.distanceToGo() != 0) {
-            myStepper.run();
-        }
-        // Now move backward until S2 is blocked (value < 300)
-        while (analogRead(photodiodeS2Pin) < 300 && !emergencyStop) {
-            myStepper.move(-1000000);
-            myStepper.run();
-        }
-    } else {
-        // Move backward until S2 is blocked (value < 300)
-        while (analogRead(photodiodeS2Pin) < 300 && !emergencyStop) {
-            myStepper.move(-1000000);
-            myStepper.run();
-        }
-    }
-    // Print the value of photodiode S2 for debugging
-    Serial.print("Photodiode S2: "); //this value should be around 300 for proper work
-    Serial.println(analogRead(photodiodeS2Pin));
-
-    // Reset the stepper position to zero (home)
-    myStepper.setCurrentPosition(0);
-    
-    Serial.println("Homed to initial position.");
-    Serial.println("You can now select the grating you wish to operate with.");
-}
-
-void moveToWavelength(float targetWavelength) {
-  int targetSteps;
-  bool validInput = true;
-
-  // Check if the input wavelength is within the valid range for the selected mode
-  if (gratingMode == 0) { // VIS Grating only
-    if (targetWavelength < 350 || targetWavelength > 1000) {
-      Serial.println("Invalid wavelength for VIS Grating. Please enter a wavelength between 350 and 1000 nm:");
-      validInput = false;
-    } else {
-      Serial.print("Moving to wavelength: ");
-      Serial.println(targetWavelength);
-      targetSteps = (targetWavelength + 377.2128) / 1.1164;
-    }
-  } else if (gratingMode == 1) { // IR Grating only
-    if (targetWavelength < 587 || targetWavelength > 2000) {
-      Serial.println("Invalid wavelength for IR Grating. Please enter a wavelength between 587 and 2000 nm:");
-      validInput = false;
-    } else {
-      targetSteps = (targetWavelength + 4715.4390) / 0.5099;
-    }
-  } else if (gratingMode == 2) { // Switching between gratings mode
-    if (targetWavelength < 350 || targetWavelength > 2000) {
-      Serial.println("Invalid wavelength for switching mode. Please enter a wavelength between 350 and 2000 nm:");
-      validInput = false;
-    } else {
-      if (targetWavelength < 650) {
-        targetSteps = (targetWavelength + 389.2407) / 1.1127; // linear approximation VIS range
-      } else {
-        targetSteps = (targetWavelength + 4715.4390) / 0.5099; // linear approximation IR range
-      }
-    }
-  }
-
-  if (validInput) {
-    myStepper.moveTo(targetSteps);
-    //Serial.println("Moving to steps"); //<-- command for debugging if needed
-    while (myStepper.distanceToGo() != 0) {
-      myStepper.run(); // Continuously run the stepper
-
-      // Check for an emergency stop command
-      if (Serial.available() > 0) {
-        String stopCommand = Serial.readStringUntil('\n');
-        stopCommand.trim();
-        if (stopCommand == "stop") {
-          Serial.println("Emergency stop initiated.");
-          myStepper.stop();
-          Serial.println("You can now enter a new wavelength or choose another grating to work with.");
-          return; // Exit the function early
-        }
-      }
-    }
-
-    // Only print this if the stepper has successfully finished its move
-    Serial.print("Target wavelength reached. Current wavelength is: ");
-    Serial.println(targetWavelength);
-    Serial.println("You can now enter a new wavelength or choose another grating to work with.");
+const char* modeName(GratingMode m) {
+  switch (m) {
+    case GratingMode::VIS:    return "VIS";
+    case GratingMode::IR:     return "IR";
+    case GratingMode::SWITCH: return "SWITCH";
+    default:                  return "none";
   }
 }
 
+// Drive the stepper at constant slow speed in `direction` (+1 / -1)
+// until the home photodiode's blocked state matches `targetBlocked`.
+// Uses runSpeed() (no acceleration profile) so edge detection is at a
+// known low velocity for repeatability.
+void seekHomeEdge(int direction, bool targetBlocked) {
+  stepper.setSpeed(direction * HOMING_SEEK_SPEED);
+  while (true) {
+    bool blocked = analogRead(HOME_PHOTODIODE_PIN) > PHOTODIODE_THRESHOLD;
+    if (blocked == targetBlocked) break;
+    stepper.runSpeed();
+  }
+}
 
+// =====================================================================
+// Command handlers
+// =====================================================================
 
+// Home against the photodiode flag, leaving the stepper at position 0
+// just inside the blocked region. If the flag is already blocked at
+// entry, first move forward off the flag (plus HOMING_BACKOFF_STEPS)
+// so the final approach is always from the unblocked side.
+void homeMotor() {
+  Serial.println("INFO: homing");
 
+  if (analogRead(HOME_PHOTODIODE_PIN) > PHOTODIODE_THRESHOLD) {
+    seekHomeEdge(+1, /*targetBlocked=*/false);
+    long startPos = stepper.currentPosition();
+    stepper.setSpeed(+HOMING_SEEK_SPEED);
+    while (stepper.currentPosition() - startPos < HOMING_BACKOFF_STEPS) {
+      stepper.runSpeed();
+    }
+  }
+  seekHomeEdge(-1, /*targetBlocked=*/true);
 
+  Serial.print("ADC: ");
+  Serial.println(analogRead(HOME_PHOTODIODE_PIN));
+  stepper.setCurrentPosition(0);
+  motorHomed = true;
+  Serial.println("OK: homed");
+}
 
+// `mode <0|1|2>` — set the active grating mode.
+void handleModeCommand(const String& input) {
+  int sp = input.indexOf(' ');
+  if (sp < 0) {
+    Serial.println("ERR: invalid_mode");
+    return;
+  }
+  int value = input.substring(sp + 1).toInt();
+  switch (value) {
+    case 0: currentMode = GratingMode::VIS;    break;
+    case 1: currentMode = GratingMode::IR;     break;
+    case 2: currentMode = GratingMode::SWITCH; break;
+    default:
+      Serial.println("ERR: invalid_mode");
+      return;
+  }
+  Serial.print("OK: mode ");
+  Serial.println(modeName(currentMode));
+}
 
+// `wavelength <nm>` — move the stepper to the wavelength's target step.
+// Allows interruption with `stop` mid-move.
+void handleWavelengthCommand(const String& input) {
+  if (currentMode == GratingMode::NONE) {
+    Serial.println("ERR: no_mode");
+    return;
+  }
+  int sp = input.indexOf(' ');
+  if (sp < 0) {
+    Serial.println("ERR: invalid_wavelength");
+    return;
+  }
+  float wavelength = input.substring(sp + 1).toFloat();
 
+  GratingCalibration cal;
+  float boundsMin, boundsMax;
+  switch (currentMode) {
+    case GratingMode::VIS:
+      cal = VIS_CAL;
+      boundsMin = VIS_CAL.minNm;
+      boundsMax = VIS_CAL.maxNm;
+      break;
+    case GratingMode::IR:
+      cal = IR_CAL;
+      boundsMin = IR_CAL.minNm;
+      boundsMax = IR_CAL.maxNm;
+      break;
+    case GratingMode::SWITCH:
+      boundsMin = SWITCH_MIN_NM;
+      boundsMax = SWITCH_MAX_NM;
+      cal = (wavelength < SWITCH_CROSSOVER_NM) ? SWITCH_VIS_CAL : IR_CAL;
+      break;
+    default:
+      Serial.println("ERR: no_mode");
+      return;
+  }
 
+  if (wavelength < boundsMin || wavelength > boundsMax) {
+    Serial.print("ERR: out_of_range ");
+    Serial.print(boundsMin);
+    Serial.print(' ');
+    Serial.println(boundsMax);
+    return;
+  }
 
+  long targetSteps = (long)((wavelength + cal.offset) / cal.slope);
+
+  Serial.print("INFO: moving ");
+  Serial.println(wavelength);
+
+  stepper.moveTo(targetSteps);
+  while (stepper.distanceToGo() != 0) {
+    stepper.run();
+
+    if (Serial.available() > 0) {
+      String maybeStop = Serial.readStringUntil('\n');
+      maybeStop.trim();
+      if (maybeStop == "stop") {
+        stepper.stop();
+        while (stepper.isRunning()) stepper.run();   // smooth deceleration
+        Serial.println("OK: stopped");
+        return;
+      }
+      // Any other command received mid-move is dropped.
+    }
+  }
+
+  Serial.print("OK: wavelength ");
+  Serial.println(wavelength);
+}
+
+void reportStatus() {
+  Serial.print("INFO: mode=");
+  Serial.print(modeName(currentMode));
+  Serial.print(" homed=");
+  Serial.print(motorHomed ? 1 : 0);
+  Serial.print(" pos=");
+  Serial.println(stepper.currentPosition());
+}
