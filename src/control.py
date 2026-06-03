@@ -1,12 +1,12 @@
 import numpy as np
 
 from pylablib.devices import Thorlabs
-from pythorcam.camera_cs126 import Camera_CS126
+from src.pythorcam.thorcam import ThorlabsCamera
 from src.monochromator.mono_class import MonochromatorControl
 
 class Control:
     def __init__(self, 
-                 camera: Camera_CS126, 
+                 camera: ThorlabsCamera, 
                  monochromator: MonochromatorControl,
                  focus: Thorlabs.KinesisMotor):
         
@@ -14,13 +14,12 @@ class Control:
         self.mono = monochromator
         self.focus = focus
 
-        # init devices
-        self.camera.Init_device()
+        # camera is already connected in its __init__; only the mono needs initialization here.
         self.mono.initialize_arduino()
-        # focus is initialized automatically 
+        # focus is initialized automatically
 
     def shutdown(self):
-        self.camera.Shutdown_device()
+        self.camera.close()
         self.mono.disconnect()
         self.focus.close()
 
@@ -33,10 +32,12 @@ class Control:
                             black_level: int, 
                             bit_depth=np.uint16, 
                             out_bit_depth=np.float32) -> None:
-        """ Exposure time in ms"""
-        self.camera.Set_settings(exposure_time*1000,
-                                 gain, black_level, 
-                                 bit_depth, out_bit_depth)
+        """Exposure time in ms (converted to µs for the camera)."""
+        self.camera.set_settings(exposure_time_us=exposure_time * 1000,
+                                 gain=gain,
+                                 black_level=black_level,
+                                 bit_depth=bit_depth,
+                                 out_bit_depth=out_bit_depth)
         
     
 
