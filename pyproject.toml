@@ -10,6 +10,7 @@ dependencies = [
     "opencv-python>=4.13.0.92",
     "pylablib>=1.4.5",
     "pyqt5-qt5<=5.15.2",
+    "pyvisa>=1.16.2",
     "thorlabs-tsi-sdk",
 ]
 

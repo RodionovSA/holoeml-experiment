@@ -569,6 +569,7 @@ dependencies = [
     { name = "opencv-python" },
     { name = "pylablib" },
     { name = "pyqt5-qt5" },
+    { name = "pyvisa" },
     { name = "thorlabs-tsi-sdk" },
 ]
 
@@ -584,6 +585,7 @@ requires-dist = [
     { name = "opencv-python", specifier = ">=4.13.0.92" },
     { name = "pylablib", specifier = ">=1.4.5" },
     { name = "pyqt5-qt5", specifier = "<=5.15.2" },
+    { name = "pyvisa", specifier = ">=1.16.2" },
     { name = "thorlabs-tsi-sdk", path = "thorcam-sdk/Python Toolkit/thorlabs_tsi_camera_python_sdk_package.zip" },
 ]
 
