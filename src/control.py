@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 
 from pylablib.devices import Thorlabs
-from src.pythorcam.thorcam import ThorlabsCamera, create_camera_sdk
+from src.pythorcam.thorcam import ThorlabsCamera, create_camera_sdk, TLCameraSDK
 from src.monochromator.mono import MonochromatorControl
 from src.filterwheel import FilterWheelControl
 from src.config import Config, ExposureSettings
@@ -12,12 +12,14 @@ from src.pythorcam.utils import brightness_calibration as _brightness_calibratio
 
 class Control:
     def __init__(self,
+                 camerasdk: TLCameraSDK,
                  camera: ThorlabsCamera,
                  monochromator: MonochromatorControl,
                  focus: Thorlabs.KinesisMotor,
                  filterwheel: FilterWheelControl,
                  config: Config):
 
+        self._camerasdk = camerasdk
         self.camera = camera
         self.mono = monochromator
         self.focus = focus
@@ -47,7 +49,7 @@ class Control:
 
             focus = Thorlabs.KinesisMotor(config.focus_serial, scale='stage')
 
-            return cls(camera, monochromator, focus, filterwheel, config)
+            return cls(camerasdk, camera, monochromator, focus, filterwheel, config)
         except Exception:
             if focus is not None:
                 focus.close()
