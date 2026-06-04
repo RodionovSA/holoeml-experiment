@@ -8,9 +8,9 @@ if __name__ == "__main__":
     config = Config.from_yaml("src\config\config.yaml")
     control = Control.from_config(config)
 
-    # Run calibration
-    print('Started calibration')
+    # Run reference measurement
     start = time.time()
-    control.brightness_calibration(override=True, use_current_as_initial=True)
+    control.reference_measurement()
     end = time.time()
-    print(f'Ended calibration in {end - start} s')
+
+    print(end - start)
