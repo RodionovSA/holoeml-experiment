@@ -11,6 +11,6 @@ if __name__ == "__main__":
     # Run calibration
     print('Started calibration')
     start = time.time()
-    control.brightness_calibration(override=False)
+    control.brightness_calibration(override=True, use_current_as_initial=True)
     end = time.time()
     print(f'Ended calibration in {end - start} s')
