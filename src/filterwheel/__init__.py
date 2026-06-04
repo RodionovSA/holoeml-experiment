@@ -1,1 +1,1 @@
-from .filterwheel import Filterwheel
+from .filterwheel import FilterWheelControl

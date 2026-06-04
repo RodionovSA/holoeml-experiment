@@ -7,7 +7,7 @@ wvl_num: 121
 filter_wvl: 600.0
 
 # Camera
-camera_serial: '35595'
+camera_serial: '29236'
 exposure_settings_path: 'src/config/exposure_settings.json'
 camera_black_level: 0
 camera_bit_depth: 'uint16'
