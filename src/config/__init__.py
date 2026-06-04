@@ -1,1 +1,1 @@
-from .config import Config, ExposureSettings
+from .config import Config, ExposureSettings, FocusSettings

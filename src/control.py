@@ -8,7 +8,7 @@ from pylablib.devices import Thorlabs
 from src.pythorcam.thorcam import ThorlabsCamera, create_camera_sdk
 from src.monochromator.mono import MonochromatorControl
 from src.filterwheel import FilterWheelControl
-from src.config import Config, ExposureSettings
+from src.config import Config, ExposureSettings, FocusSettings
 from src.pythorcam.utils import brightness_calibration as _brightness_calibration
 
 class Control:
@@ -30,6 +30,11 @@ class Control:
         if not self._exposure_settings_path.exists():
             ExposureSettings().save(self._exposure_settings_path)
         self.exposure_settings = ExposureSettings.load(self._exposure_settings_path)
+
+        self._focus_settings_path = Path(config.focus_settings_path)
+        if not self._focus_settings_path.exists():
+            FocusSettings().save(self._focus_settings_path)
+        self.focus_settings = FocusSettings.load(self._focus_settings_path)
 
     @classmethod
     def from_config(cls, config: Config):
@@ -72,11 +77,20 @@ class Control:
         """Move hardware to the canonical resting state.
 
         Sets the monochromator to ``config.default_wavelength``, the filter
-        wheel to the empty position, and the camera to the initial calibration
-        settings defined in config.
+        wheel to the empty position, the focus motor to
+        ``config.default_focus_position`` (if set), and the camera to the
+        initial calibration settings defined in config.
         """
         self.mono.set_wavelength(self.config.default_wavelength)
         self.filterwheel.set_position(self.config.filterwheel_empty_pos)
+        _mm = 1e-3
+        if self.config.default_focus_max_velocity is not None:
+            self.focus.setup_velocity(max_velocity=self.config.default_focus_max_velocity * _mm)
+        if self.config.default_focus_acceleration is not None:
+            self.focus.setup_velocity(acceleration=self.config.default_focus_acceleration * _mm)
+        if self.config.default_focus_position is not None:
+            self.focus.move_to(self.config.default_focus_position * 1000)
+            self.focus.wait_move()
         self.camera.set_settings(
             exposure_time_us=self.config.calib_initial_exposure_ms * 1000,
             gain=self.config.calib_initial_gain,
@@ -112,6 +126,13 @@ class Control:
 
     def save_exposure_settings(self) -> None:
         self.exposure_settings.save(self._exposure_settings_path)
+
+    def load_focus_settings(self) -> FocusSettings:
+        self.focus_settings = FocusSettings.load(self._focus_settings_path)
+        return self.focus_settings
+
+    def save_focus_settings(self) -> None:
+        self.focus_settings.save(self._focus_settings_path)
 
     def brightness_calibration(self,
                                override: bool = False,
@@ -265,9 +286,128 @@ class Control:
         save_path = save_dir / f'reference_{timestamp}.npz'
         np.savez(save_path, wavelengths=wavelengths, images=np.stack(images))
         return save_path
-        
-    
 
+    def black_measurement(self) -> Path:
+        """Capture one dark frame per sweep wavelength with the beam blocked.
 
+        Moves the filter wheel to ``config.black_pos`` once before capturing,
+        then iterates over wavelengths applying per-wavelength exposure settings
+        without moving the monochromator.  Saves the image stack to ``save_dir``.
 
-    
+        Returns
+        -------
+        Path
+            Path to the saved NPZ file.
+
+        Raises
+        ------
+        RuntimeError
+            If :attr:`exposure_settings` does not match the config wavelengths.
+        """
+        cfg = self.config
+        wavelengths = np.linspace(cfg.wvl_start, cfg.wvl_stop, cfg.wvl_num)
+
+        stored = self.exposure_settings.wavelengths
+        if len(stored) != len(wavelengths) or not np.allclose(stored, wavelengths, atol=0.01):
+            raise RuntimeError(
+                "Exposure settings do not match config wavelengths. "
+                "Run brightness_calibration() first."
+            )
+
+        self.go_to_default_state()
+        self.filterwheel.set_position(cfg.black_pos)
+        self.camera.arm()
+        time.sleep(0.1)
+        images = []
+        try:
+            for i in range(len(wavelengths)):
+                self.camera.set_exposure_time_us(int(self.exposure_settings.exposure_ms[i] * 1000))
+                self.camera.set_gain(self.exposure_settings.gain[i])
+                image = self.camera.get_image(
+                    num_frames_to_average=cfg.num_frames_to_average,
+                    num_frames_to_drop=cfg.num_frames_to_drop,
+                    delay=cfg.capture_delay,
+                )
+                images.append(image)
+        finally:
+            self.camera.disarm()
+            self.go_to_default_state()
+
+        save_dir = Path(cfg.save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        save_path = save_dir / f'black_{timestamp}.npz'
+        np.savez(save_path, wavelengths=wavelengths, images=np.stack(images))
+        return save_path
+
+    def sample_measurement(self) -> Path:
+        """Capture one sample image per sweep wavelength and save as NPZ.
+
+        Moves the monochromator, filter wheel, and focus motor to per-wavelength
+        positions.  Focus movement is skipped when the motor is already within
+        0.5 motor units of the target.  Uses per-wavelength exposure and gain
+        from :attr:`exposure_settings` and positions from :attr:`focus_settings`.
+
+        Returns
+        -------
+        Path
+            Path to the saved NPZ file.
+
+        Raises
+        ------
+        RuntimeError
+            If either settings file does not match the config wavelengths.
+        """
+        cfg = self.config
+        wavelengths = np.linspace(cfg.wvl_start, cfg.wvl_stop, cfg.wvl_num)
+
+        for settings, name in (
+            (self.exposure_settings.wavelengths, "Exposure"),
+            (self.focus_settings.wavelengths, "Focus"),
+        ):
+            if len(settings) != len(wavelengths) or not np.allclose(settings, wavelengths, atol=0.01):
+                raise RuntimeError(
+                    f"{name} settings do not match config wavelengths. "
+                    "Run calibration first."
+                )
+
+        if cfg.default_focus_position is None:
+            raise RuntimeError(
+                "default_focus_position must be set in config to use focus_settings offsets."
+            )
+
+        self.go_to_default_state()
+        self.camera.arm()
+        time.sleep(0.1)
+        images = []
+        try:
+            for i, wvl in enumerate(wavelengths):
+                self.mono.set_wavelength(wvl)
+
+                fw_pos = cfg.longpass_pos if wvl >= cfg.filter_wvl else cfg.filterwheel_empty_pos
+                if self.filterwheel.get_position() != fw_pos:
+                    self.filterwheel.set_position(fw_pos)
+
+                target_mm = cfg.default_focus_position + self.focus_settings.offsets[i]
+                if abs(self.focus.get_position() / 1000 - target_mm) > 0.005:
+                    self.focus.move_to(target_mm * 1000)
+                    self.focus.wait_move()
+
+                self.camera.set_exposure_time_us(int(self.exposure_settings.exposure_ms[i] * 1000))
+                self.camera.set_gain(self.exposure_settings.gain[i])
+                image = self.camera.get_image(
+                    num_frames_to_average=cfg.num_frames_to_average,
+                    num_frames_to_drop=cfg.num_frames_to_drop,
+                    delay=cfg.capture_delay,
+                )
+                images.append(image)
+        finally:
+            self.camera.disarm()
+            self.go_to_default_state()
+
+        save_dir = Path(cfg.save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        save_path = save_dir / f'sample_{timestamp}.npz'
+        np.savez(save_path, wavelengths=wavelengths, images=np.stack(images))
+        return save_path

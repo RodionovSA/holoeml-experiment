@@ -30,6 +30,26 @@ class ExposureSettings:
 
 
 @dataclass
+class FocusSettings:
+    """Per-wavelength focus offsets (mm) relative to ``Config.default_focus_position``."""
+
+    wavelengths: list[float] = field(default_factory=list)
+    offsets: list[float] = field(default_factory=list)
+
+    @classmethod
+    def load(cls, path: str | Path) -> FocusSettings:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return cls(**data)
+
+    def save(self, path: str | Path) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(asdict(self), f, indent=2)
+
+
+@dataclass
 class Config:
     """Experiment configuration for all hardware devices.
 
@@ -57,6 +77,8 @@ class Config:
     """Serial number string of the Thorlabs camera."""
     exposure_settings_path: str = "exposure_settings.json"
     """Path to the per-wavelength exposure settings JSON file."""
+    focus_settings_path: str = "focus_settings.json"
+    """Path to the per-wavelength focus positions JSON file."""
     camera_black_level: int = 0
     """Camera black level offset."""
     camera_bit_depth: str = 'uint16'
@@ -93,6 +115,12 @@ class Config:
     # Default state
     default_wavelength: float = 550.0
     """Wavelength (nm) the system returns to after init, calibration, and measurement."""
+    default_focus_position: float | None = None
+    """Focus motor position (mm) the system returns to after init, calibration, and measurement. ``None`` skips focus movement."""
+    default_focus_max_velocity: float | None = None
+    """Focus motor max velocity (mm/s). ``None`` skips."""
+    default_focus_acceleration: float | None = None
+    """Focus motor acceleration (mm/s²). ``None`` skips."""
 
     # z-translation motor
     focus_serial: str = ""

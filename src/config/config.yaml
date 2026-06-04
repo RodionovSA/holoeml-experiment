@@ -9,6 +9,7 @@ filter_wvl: 600.0
 # Camera
 camera_serial: '29236'
 exposure_settings_path: 'src/config/exposure_settings.json'
+focus_settings_path: 'src/config/focus_settings.json'
 camera_black_level: 0
 camera_bit_depth: 'uint16'
 camera_out_bit_depth: 'float32'
@@ -24,8 +25,13 @@ calib_num_frames_to_average: 1
 calib_num_frames_to_drop: 1
 calib_delay: 0.0
 
+# Default state
+default_focus_position: 7.8       # mm
+default_focus_max_velocity: 0.1   # mm/s
+default_focus_acceleration: 0.05  # mm/s²
+
 # z-translation motor
-focus_serial: '27271460'
+focus_serial: '27256388'
 
 # Filterwheel
 filterwheel_address: 'USB0::0x104D::0x1011::7A01020F12162064::RAW'
