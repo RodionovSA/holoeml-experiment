@@ -26,7 +26,7 @@ calib_num_frames_to_drop: 1
 calib_delay: 0.0
 
 # Default state
-default_focus_position: 7.74490   # mm (measured at 550 nm)
+default_focus_position: 7.8047   # mm (measured at 550 nm)
 default_focus_max_velocity: 0.5   # mm/s
 default_focus_acceleration: 0.5  # mm/s²
 
