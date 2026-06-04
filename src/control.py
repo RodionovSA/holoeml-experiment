@@ -89,7 +89,7 @@ class Control:
         if self.config.default_focus_acceleration is not None:
             self.focus.setup_velocity(acceleration=self.config.default_focus_acceleration * _mm)
         if self.config.default_focus_position is not None:
-            self.focus.move_to(self.config.default_focus_position * 1000)
+            self.focus.move_to(self.config.default_focus_position * _mm)
             self.focus.wait_move()
         self.camera.set_settings(
             exposure_time_us=self.config.calib_initial_exposure_ms * 1000,
@@ -388,9 +388,9 @@ class Control:
                 if self.filterwheel.get_position() != fw_pos:
                     self.filterwheel.set_position(fw_pos)
 
-                target_mm = cfg.default_focus_position + self.focus_settings.offsets[i]
-                if abs(self.focus.get_position() / 1000 - target_mm) > 0.005:
-                    self.focus.move_to(target_mm * 1000)
+                target_m = (cfg.default_focus_position + self.focus_settings.offsets[i]) * 1e-3
+                if abs(self.focus.get_position() - target_m) > 5e-6:
+                    self.focus.move_to(target_m)
                     self.focus.wait_move()
 
                 self.camera.set_exposure_time_us(int(self.exposure_settings.exposure_ms[i] * 1000))
