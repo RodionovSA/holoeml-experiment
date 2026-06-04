@@ -55,7 +55,9 @@ class Control:
 
             focus = Thorlabs.KinesisMotor(config.focus_serial, scale='stage')
 
-            return cls(camera, monochromator, focus, filterwheel, config)
+            ctrl = cls(camera, monochromator, focus, filterwheel, config)
+            ctrl.go_to_default_state()
+            return ctrl
         except Exception:
             if focus is not None:
                 focus.close()
@@ -65,6 +67,23 @@ class Control:
                 monochromator.disconnect()
             camera.close()
             raise
+
+    def go_to_default_state(self) -> None:
+        """Move hardware to the canonical resting state.
+
+        Sets the monochromator to ``config.default_wavelength``, the filter
+        wheel to the empty position, and the camera to the initial calibration
+        settings defined in config.
+        """
+        self.mono.set_wavelength(self.config.default_wavelength)
+        self.filterwheel.set_position(self.config.filterwheel_empty_pos)
+        self.camera.set_settings(
+            exposure_time_us=self.config.calib_initial_exposure_ms * 1000,
+            gain=self.config.calib_initial_gain,
+            black_level=self.config.camera_black_level,
+            bit_depth=getattr(np, self.config.camera_bit_depth),
+            out_bit_depth=getattr(np, self.config.camera_out_bit_depth),
+        )
 
     def close(self):
         if self._closed:
@@ -94,13 +113,21 @@ class Control:
     def save_exposure_settings(self) -> None:
         self.exposure_settings.save(self._exposure_settings_path)
 
-    def brightness_calibration(self, override: bool = False) -> None:
+    def brightness_calibration(self,
+                               override: bool = False,
+                               use_current_as_initial: bool = False) -> None:
         """Run per-wavelength brightness calibration and store results.
 
         All calibration parameters are read from :attr:`config`.  Iterates over
-        every wavelength in the config sweep, moves the monochromator, and calls
-        :func:`brightness_calibration` from ``utils``.  The exposure and gain
-        found at wavelength N seed the next wavelength to speed up convergence.
+        every wavelength in the config sweep, moves the monochromator and filter
+        wheel (matching measurement conditions), and calls
+        :func:`brightness_calibration` from ``utils``.
+
+        By default the exposure and gain found at wavelength N seed the next
+        wavelength to speed up convergence.  When *use_current_as_initial* is
+        ``True`` and stored settings already cover all sweep wavelengths, each
+        wavelength is instead seeded from its own stored value, which can
+        accelerate re-calibration significantly.
 
         Returns immediately if the settings file already contains entries for
         all config wavelengths, unless *override* is ``True``.
@@ -114,18 +141,41 @@ class Control:
                     and np.allclose(stored, wavelengths, atol=0.01)):
                 return
 
+        self.go_to_default_state()
+
+        # Build per-wavelength seeds if using current stored values.
+        stored = self.exposure_settings
+        if (use_current_as_initial
+                and len(stored.wavelengths) == len(wavelengths)
+                and np.allclose(stored.wavelengths, wavelengths, atol=0.01)):
+            init_exp_us = [int(e * 1000) for e in stored.exposure_ms]
+            init_gain = list(stored.gain)
+        else:
+            init_exp_us = None
+            init_gain = None
+
+        # Cascade seeds for the non-current-initial path.
         exp_us = cfg.calib_initial_exposure_ms * 1000
         gain = cfg.calib_initial_gain
+
         calibrated_wavelengths: list[float] = []
-        calibrated_exposures: list[int] = []
+        calibrated_exposures: list[float] = []
         calibrated_gains: list[int] = []
-        
+        calibrated_brightnesses: list[float] = []
+
         self.camera.arm()
         time.sleep(0.1)
         try:
-            for wvl in wavelengths:
+            for i, wvl in enumerate(wavelengths):
                 self.mono.set_wavelength(wvl)
-                exp_us, gain = _brightness_calibration(
+                fw_pos = cfg.longpass_pos if wvl >= cfg.filter_wvl else cfg.filterwheel_empty_pos
+                self.filterwheel.set_position(fw_pos)
+
+                if init_exp_us is not None:
+                    exp_us = init_exp_us[i]
+                    gain = init_gain[i]
+
+                exp_us, gain, brightness = _brightness_calibration(
                     camera=self.camera,
                     initial_exposure_time=exp_us,
                     initial_gain=gain,
@@ -135,20 +185,24 @@ class Control:
                     max_number_of_steps=cfg.calib_max_steps,
                     max_exposure_time=cfg.calib_max_exposure_ms * 1000,
                     priority=cfg.calib_priority,
+                    gain_step_db=cfg.calib_gain_step_db,
                     num_frames_to_average=cfg.calib_num_frames_to_average,
                     num_frames_to_drop=cfg.calib_num_frames_to_drop,
                     delay=cfg.calib_delay,
                 )
                 calibrated_wavelengths.append(float(wvl))
-                calibrated_exposures.append(exp_us // 1000)
+                calibrated_exposures.append(exp_us / 1000)
                 calibrated_gains.append(gain)
+                calibrated_brightnesses.append(brightness)
         finally:
             self.camera.disarm()
+            self.go_to_default_state()
 
         self.exposure_settings = ExposureSettings(
             wavelengths=calibrated_wavelengths,
             exposure_ms=calibrated_exposures,
             gain=calibrated_gains,
+            best_brightness=calibrated_brightnesses,
         )
         self.save_exposure_settings()
 
@@ -179,7 +233,8 @@ class Control:
                 "Exposure settings do not match config wavelengths. "
                 "Run brightness_calibration() first."
             )
-            
+
+        self.go_to_default_state()
         self.camera.arm()
         time.sleep(0.1)
         images = []
@@ -191,7 +246,7 @@ class Control:
                 if self.filterwheel.get_position() != fw_pos:
                     self.filterwheel.set_position(fw_pos)
 
-                self.camera.set_exposure_time_us(self.exposure_settings.exposure_ms[i] * 1000)
+                self.camera.set_exposure_time_us(int(self.exposure_settings.exposure_ms[i] * 1000))
                 self.camera.set_gain(self.exposure_settings.gain[i])
 
                 image = self.camera.get_image(
@@ -202,6 +257,7 @@ class Control:
                 images.append(image)
         finally:
             self.camera.disarm()
+            self.go_to_default_state()
 
         save_dir = Path(cfg.save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)

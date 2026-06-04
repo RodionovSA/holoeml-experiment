@@ -12,8 +12,9 @@ class ExposureSettings:
     """Per-wavelength camera exposure settings persisted as a JSON file."""
 
     wavelengths: list[float] = field(default_factory=list)
-    exposure_ms: list[int] = field(default_factory=list)
+    exposure_ms: list[float] = field(default_factory=list)
     gain: list[int] = field(default_factory=list)
+    best_brightness: list[float] = field(default_factory=list)
 
     @classmethod
     def load(cls, path: str | Path) -> ExposureSettings:
@@ -69,7 +70,9 @@ class Config:
     calib_tolerance: float = 0.02
     """Acceptable deviation from target before calibration stops."""
     calib_increment: float = 0.1
-    """Multiplicative step size (±10% per iteration) for exposure/gain adjustment."""
+    """Multiplicative step size (±10% per iteration) for exposure time adjustment."""
+    calib_gain_step_db: float = 0.5
+    """Fixed gain step in dB per iteration (1 dB = 10 SDK units). Additive, not multiplicative."""
     calib_max_steps: int = 50
     """Maximum iterations per wavelength before giving up."""
     calib_max_exposure_ms: int = 500
@@ -86,6 +89,10 @@ class Config:
     """Frames to discard before averaging."""
     calib_delay: float = 0.0
     """Delay in seconds between frame captures during calibration."""
+
+    # Default state
+    default_wavelength: float = 550.0
+    """Wavelength (nm) the system returns to after init, calibration, and measurement."""
 
     # z-translation motor
     focus_serial: str = ""
