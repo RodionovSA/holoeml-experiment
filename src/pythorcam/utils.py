@@ -173,7 +173,7 @@ def brightness_calibration(camera: ThorlabsCamera,
     ----------
     camera : ThorlabsCamera
     initial_exposure_time : int
-        Starting exposure in microseconds (µs).
+        Starting exposure in microseconds (µs). Must be armed!
     initial_gain : int
         Starting gain in SDK-defined units.
     target_brightness : float

@@ -21,7 +21,7 @@ calib_initial_exposure_ms: 300
 calib_initial_gain: 0
 calib_priority: 'exposure_time'
 calib_num_frames_to_average: 1
-calib_num_frames_to_drop: 0
+calib_num_frames_to_drop: 1
 calib_delay: 0.0
 
 # z-translation motor
