@@ -163,7 +163,8 @@ def brightness_calibration(camera: ThorlabsCamera,
                            max_gain: int = 480,
                            num_frames_to_average: int = 1,
                            num_frames_to_drop: int = 5,
-                           delay: float = 0) -> tuple[int, int, float]:
+                           delay: float = 0,
+                           roi_fraction: float | None = None) -> tuple[int, int, float]:
     """Iteratively adjust exposure time and gain until mean brightness hits target.
 
     One control is treated as primary (the `priority` knob): it is exhausted
@@ -203,6 +204,10 @@ def brightness_calibration(camera: ThorlabsCamera,
         Forwarded to ``camera.get_image()``.
     delay : float
         Forwarded to ``camera.get_image()``.
+    roi_fraction : float or None
+        If given, brightness is measured over the central ``roi_fraction``
+        fraction of image height and width (e.g. 0.5 = central 50%×50%).
+        ``None`` uses the full frame.
 
     Returns
     -------
@@ -226,7 +231,14 @@ def brightness_calibration(camera: ThorlabsCamera,
         image = camera.get_image(num_frames_to_average=int(num_frames_to_average),
                                  num_frames_to_drop=int(num_frames_to_drop),
                                  delay=delay)
-        mean_brightness = image.mean() / camera.pixel_max_value
+        if roi_fraction is not None:
+            h, w = image.shape[0], image.shape[1]
+            cy, cx = h // 2, w // 2
+            ry, rx = max(1, int(h * roi_fraction / 2)), max(1, int(w * roi_fraction / 2))
+            region = image[cy - ry : cy + ry, cx - rx : cx + rx]
+            mean_brightness = region.mean() / camera.pixel_max_value
+        else:
+            mean_brightness = image.mean() / camera.pixel_max_value
         final_brightness = mean_brightness
 
         if abs(mean_brightness - target_brightness) < tolerance:

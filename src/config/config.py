@@ -103,6 +103,18 @@ class Config:
     """Focus motor max velocity (mm/s). ``None`` skips."""
     default_focus_acceleration: float | None = None
     """Focus motor acceleration (mm/s²). ``None`` skips."""
+    
+    # ── Polarizer motor ───────────────────────────────────────────────────────
+    polarizer_serial: str = ""
+    """Serial number string of the Thorlabs Kinesis polarizer rotation stage."""
+    default_polarizer_home_velocity: float | None = None
+    """Polarizer homing velocity (deg/s). ``None`` skips focus movement."""
+    default_polarizer_max_velocity: float | None = None
+    """Polarizer motor max velocity (deg/s). ``None`` skips."""
+    default_polarizer_acceleration: float | None = None
+    """Polarizer motor acceleration (deg/s²). ``None`` skips."""
+    polarizer_x_position: float | None = None
+    """Polarizer position for x-polarization state. ``None`` skips."""
 
     # ── Filter wheel ──────────────────────────────────────────────────────────
     filterwheel_address: str = ""
@@ -141,6 +153,8 @@ class Config:
     """Frames to discard before averaging."""
     calib_delay: float = 0.0
     """Delay in seconds between frame captures during calibration."""
+    calib_roi_fraction: float | None = None
+    """Central fraction of image (0–1) used for brightness averaging during calibration. ``None`` uses the full frame."""
 
     # ── Measurements ──────────────────────────────────────────────────────────
     save_dir: str = '.'
@@ -153,6 +167,10 @@ class Config:
     """Delay in seconds between frame captures for all measurement types."""
     exposure_settings_path: str = "exposure_settings.json"
     """Path to the per-wavelength exposure settings JSON file."""
+    exposure_settings_xpol_path: str = "exposure_settings_xpol.json"
+    """Path to the per-wavelength exposure settings JSON file for x-polarization."""
+    exposure_settings_ypol_path: str = "exposure_settings_ypol.json"
+    """Path to the per-wavelength exposure settings JSON file for y-polarization."""
     focus_settings_path: str = "focus_settings.json"
     """Path to the per-wavelength focus positions JSON file."""
 

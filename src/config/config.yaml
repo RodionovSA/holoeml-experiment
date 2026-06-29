@@ -21,6 +21,13 @@ default_focus_position: 7.8047  # mm (reference position at 550 nm)
 default_focus_max_velocity: 0.5  # mm/s
 default_focus_acceleration: 0.5  # mm/s²
 
+# ── Polarizer motor ───────────────────────────────────────────────────────────
+polarizer_serial: '55001180'
+polarizer_x_position: 45 # deg
+default_polarizer_home_velocity: 10  # deg/s
+default_polarizer_max_velocity: 10  # deg/s
+default_polarizer_acceleration: 15  # deg/s²
+
 # ── Filter wheel ──────────────────────────────────────────────────────────────
 filterwheel_address: 'USB0::0x104D::0x1011::7A01020F12162064::RAW'
 filterwheel_timeout: 2000  # ms
@@ -41,6 +48,7 @@ calib_initial_gain: 0
 calib_num_frames_to_average: 1
 calib_num_frames_to_drop: 1
 calib_delay: 0.0                 # s — delay between captures
+calib_roi_fraction: null         # null = full frame; e.g. 0.5 = central 50%×50% of pixels
 
 # ── Measurements ──────────────────────────────────────────────────────────────
 save_dir: '.'
@@ -48,4 +56,6 @@ num_frames_to_average: 5
 num_frames_to_drop: 1
 capture_delay: 0.0               # s — delay between captures
 exposure_settings_path: 'src/config/exposure_settings.json'
+exposure_settings_xpol_path: 'src/config/exposure_settings_xpol.json'
+exposure_settings_ypol_path: 'src/config/exposure_settings_ypol.json'
 focus_settings_path: 'src/config/focus_settings.json'

@@ -16,12 +16,14 @@ class Control:
                  camera: ThorlabsCamera,
                  monochromator: MonochromatorControl,
                  focus: Thorlabs.KinesisMotor,
+                 polarizer: Thorlabs.KinesisMotor,
                  filterwheel: FilterWheelControl,
                  config: Config):
 
         self.camera = camera
         self.mono = monochromator
         self.focus = focus
+        self.polarizer = polarizer
         self.filterwheel = filterwheel
         self.config = config
         self._closed = False
@@ -30,6 +32,16 @@ class Control:
         if not self._exposure_settings_path.exists():
             ExposureSettings().save(self._exposure_settings_path)
         self.exposure_settings = ExposureSettings.load(self._exposure_settings_path)
+
+        self._exposure_settings_xpol_path = Path(config.exposure_settings_xpol_path)
+        if not self._exposure_settings_xpol_path.exists():
+            ExposureSettings().save(self._exposure_settings_xpol_path)
+        self.exposure_settings_x = ExposureSettings.load(self._exposure_settings_xpol_path)
+
+        self._exposure_settings_ypol_path = Path(config.exposure_settings_ypol_path)
+        if not self._exposure_settings_ypol_path.exists():
+            ExposureSettings().save(self._exposure_settings_ypol_path)
+        self.exposure_settings_y = ExposureSettings.load(self._exposure_settings_ypol_path)
 
         self._focus_settings_path = Path(config.focus_settings_path)
         if not self._focus_settings_path.exists():
@@ -50,6 +62,7 @@ class Control:
         monochromator = None
         filterwheel = None
         focus = None
+        polarizer = None
         try:
             monochromator = MonochromatorControl(port=config.monochromator_port)
             monochromator.initialize_arduino()
@@ -59,13 +72,17 @@ class Control:
             filterwheel = FilterWheelControl(config.filterwheel_address)
 
             focus = Thorlabs.KinesisMotor(config.focus_serial, scale='stage')
+            
+            polarizer = Thorlabs.KinesisMotor(config.polarizer_serial, scale="K10CR1")  
 
-            ctrl = cls(camera, monochromator, focus, filterwheel, config)
+            ctrl = cls(camera, monochromator, focus, polarizer, filterwheel, config)
             ctrl.go_to_default_state()
             return ctrl
         except Exception:
             if focus is not None:
                 focus.close()
+            if polarizer is not None:
+                polarizer.close()
             if filterwheel is not None:
                 filterwheel.close()
             if monochromator is not None:
@@ -84,10 +101,10 @@ class Control:
         self.mono.set_wavelength(self.config.default_wavelength)
         self.filterwheel.set_position(self.config.filterwheel_empty_pos)
         _mm = 1e-3
-        if self.config.default_focus_max_velocity is not None:
-            self.focus.setup_velocity(max_velocity=self.config.default_focus_max_velocity * _mm)
-        if self.config.default_focus_acceleration is not None:
-            self.focus.setup_velocity(acceleration=self.config.default_focus_acceleration * _mm)
+        v = self.config.default_focus_max_velocity
+        a = self.config.default_focus_acceleration
+        if v is not None or a is not None:
+            self.focus.setup_velocity(max_velocity=v * _mm, acceleration=a * _mm)
         if self.config.default_focus_position is not None:
             self.focus.move_to(self.config.default_focus_position * _mm)
             self.focus.wait_move()
@@ -98,6 +115,18 @@ class Control:
             bit_depth=getattr(np, self.config.camera_bit_depth),
             out_bit_depth=getattr(np, self.config.camera_out_bit_depth),
         )
+        self.polarizer.setup_limit_switch(hw_kind_cw='make_home', hw_kind_ccw='make_home')
+        if self.config.default_polarizer_home_velocity is not None:
+            self.polarizer.setup_homing(velocity=self.config.default_polarizer_home_velocity)
+        if not self.polarizer.is_homed():
+            self.polarizer.home(sync=True)
+        v = self.config.default_polarizer_max_velocity
+        a = self.config.default_polarizer_acceleration
+        if v is not None or a is not None:
+            self.polarizer.setup_velocity(max_velocity=v, acceleration=a)
+        if self.config.polarizer_x_position is not None:
+            self.polarizer.move_to(self.config.polarizer_x_position)
+            self.polarizer.wait_move()
 
     def close(self):
         if self._closed:
@@ -106,6 +135,7 @@ class Control:
         self.camera.close()
         self.mono.disconnect()
         self.focus.close()
+        self.polarizer.close()
         self.filterwheel.close()
 
     def __enter__(self):
@@ -120,12 +150,26 @@ class Control:
         except Exception:
             pass
 
-    def load_exposure_settings(self) -> ExposureSettings:
+    def _exposure_settings_for(self, xpol: bool | None) -> tuple[ExposureSettings, Path]:
+        if xpol is True:
+            return self.exposure_settings_x, self._exposure_settings_xpol_path
+        if xpol is False:
+            return self.exposure_settings_y, self._exposure_settings_ypol_path
+        return self.exposure_settings, self._exposure_settings_path
+
+    def load_exposure_settings(self, xpol: bool | None = None) -> ExposureSettings:
+        if xpol is True:
+            self.exposure_settings_x = ExposureSettings.load(self._exposure_settings_xpol_path)
+            return self.exposure_settings_x
+        if xpol is False:
+            self.exposure_settings_y = ExposureSettings.load(self._exposure_settings_ypol_path)
+            return self.exposure_settings_y
         self.exposure_settings = ExposureSettings.load(self._exposure_settings_path)
         return self.exposure_settings
 
-    def save_exposure_settings(self) -> None:
-        self.exposure_settings.save(self._exposure_settings_path)
+    def save_exposure_settings(self, xpol: bool | None = None) -> None:
+        settings, path = self._exposure_settings_for(xpol)
+        settings.save(path)
 
     def load_focus_settings(self) -> FocusSettings:
         self.focus_settings = FocusSettings.load(self._focus_settings_path)
@@ -136,7 +180,8 @@ class Control:
 
     def brightness_calibration(self,
                                override: bool = False,
-                               use_current_as_initial: bool = False) -> None:
+                               use_current_as_initial: bool = False,
+                               xpol: bool|None = True) -> None:
         """Run per-wavelength brightness calibration and store results.
 
         All calibration parameters are read from :attr:`config`.  Iterates over
@@ -155,15 +200,22 @@ class Control:
         """
         cfg = self.config
         wavelengths = np.linspace(cfg.wvl_start, cfg.wvl_stop, cfg.wvl_num)
+        
+        if xpol is not None:
+            angle = self.config.polarizer_x_position + (0 if xpol else 90)
+            self.polarizer.move_to(angle)
+            self.polarizer.wait_move()
+
+        current_settings, settings_path = self._exposure_settings_for(xpol)
 
         if not override:
-            stored = self.exposure_settings.wavelengths
+            stored = current_settings.wavelengths
             if (len(stored) == len(wavelengths)
                     and np.allclose(stored, wavelengths, atol=0.01)):
                 return
 
         # Build per-wavelength seeds if using current stored values.
-        stored = self.exposure_settings
+        stored = current_settings
         if (use_current_as_initial
                 and len(stored.wavelengths) == len(wavelengths)
                 and np.allclose(stored.wavelengths, wavelengths, atol=0.01)):
@@ -208,6 +260,7 @@ class Control:
                     num_frames_to_average=cfg.calib_num_frames_to_average,
                     num_frames_to_drop=cfg.calib_num_frames_to_drop,
                     delay=cfg.calib_delay,
+                    roi_fraction=cfg.calib_roi_fraction,
                 )
                 calibrated_wavelengths.append(float(wvl))
                 calibrated_exposures.append(exp_us / 1000)
@@ -216,21 +269,35 @@ class Control:
         finally:
             self.camera.disarm()
 
-        self.exposure_settings = ExposureSettings(
+        new_settings = ExposureSettings(
             wavelengths=calibrated_wavelengths,
             exposure_ms=calibrated_exposures,
             gain=calibrated_gains,
             best_brightness=calibrated_brightnesses,
         )
-        self.save_exposure_settings()
+        if xpol is True:
+            self.exposure_settings_x = new_settings
+        elif xpol is False:
+            self.exposure_settings_y = new_settings
+        else:
+            self.exposure_settings = new_settings
+        new_settings.save(settings_path)
 
-    def reference_measurement(self) -> Path:
+    def reference_measurement(self, xpol: bool | None = None) -> Path:
         """Capture one reference image per sweep wavelength and save as NPZ.
 
         Moves the monochromator to each wavelength, applies the per-wavelength
         exposure settings from :attr:`exposure_settings`, positions the filter
         wheel (long-pass above ``filter_wvl``, open/empty below), captures an
         image, and saves the full stack to ``save_dir``.
+
+        Parameters
+        ----------
+        xpol : bool or None
+            ``True`` moves the polarizer to x-polarization and uses
+            :attr:`exposure_settings_x`; ``False`` uses y-polarization and
+            :attr:`exposure_settings_y`; ``None`` skips polarizer movement and
+            uses the unpolarized :attr:`exposure_settings`.
 
         Returns
         -------
@@ -240,13 +307,18 @@ class Control:
         Raises
         ------
         RuntimeError
-            If :attr:`exposure_settings` does not match the config wavelengths.
+            If the selected :attr:`exposure_settings` does not match the config wavelengths.
         """
         cfg = self.config
         wavelengths = np.linspace(cfg.wvl_start, cfg.wvl_stop, cfg.wvl_num)
 
-        stored = self.exposure_settings.wavelengths
-        if len(stored) != len(wavelengths) or not np.allclose(stored, wavelengths, atol=0.01):
+        if xpol is not None:
+            angle = cfg.polarizer_x_position + (0 if xpol else 90)
+            self.polarizer.move_to(angle)
+            self.polarizer.wait_move()
+
+        es, _ = self._exposure_settings_for(xpol)
+        if len(es.wavelengths) != len(wavelengths) or not np.allclose(es.wavelengths, wavelengths, atol=0.01):
             raise RuntimeError(
                 "Exposure settings do not match config wavelengths. "
                 "Run brightness_calibration() first."
@@ -263,8 +335,8 @@ class Control:
                 if self.filterwheel.get_position() != fw_pos:
                     self.filterwheel.set_position(fw_pos)
 
-                self.camera.set_exposure_time_us(int(self.exposure_settings.exposure_ms[i] * 1000))
-                self.camera.set_gain(self.exposure_settings.gain[i])
+                self.camera.set_exposure_time_us(int(es.exposure_ms[i] * 1000))
+                self.camera.set_gain(es.gain[i])
 
                 image = self.camera.get_image(
                     num_frames_to_average=cfg.num_frames_to_average,
@@ -275,19 +347,28 @@ class Control:
         finally:
             self.camera.disarm()
 
+        pol_label = {True: 'xpol_', False: 'ypol_', None: ''}[xpol]
         save_dir = Path(cfg.save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        save_path = save_dir / f'reference_{timestamp}.npz'
+        save_path = save_dir / f'reference_{pol_label}{timestamp}.npz'
         np.savez(save_path, wavelengths=wavelengths, images=np.stack(images))
         return save_path
 
-    def black_measurement(self) -> Path:
+    def black_measurement(self, xpol: bool | None = None) -> Path:
         """Capture one dark frame per sweep wavelength with the beam blocked.
 
         Moves the filter wheel to ``config.black_pos`` once before capturing,
         then iterates over wavelengths applying per-wavelength exposure settings
-        without moving the monochromator.  Saves the image stack to ``save_dir``.
+        without moving the monochromator.  The polarizer is not moved (beam is
+        blocked), but exposure settings are selected to match the intended
+        measurement polarization.  Saves the image stack to ``save_dir``.
+
+        Parameters
+        ----------
+        xpol : bool or None
+            ``True`` uses :attr:`exposure_settings_x`; ``False`` uses
+            :attr:`exposure_settings_y`; ``None`` uses :attr:`exposure_settings`.
 
         Returns
         -------
@@ -297,26 +378,27 @@ class Control:
         Raises
         ------
         RuntimeError
-            If :attr:`exposure_settings` does not match the config wavelengths.
+            If the selected :attr:`exposure_settings` does not match the config wavelengths.
         """
         cfg = self.config
         wavelengths = np.linspace(cfg.wvl_start, cfg.wvl_stop, cfg.wvl_num)
 
-        stored = self.exposure_settings.wavelengths
-        if len(stored) != len(wavelengths) or not np.allclose(stored, wavelengths, atol=0.01):
+        es, _ = self._exposure_settings_for(xpol)
+        if len(es.wavelengths) != len(wavelengths) or not np.allclose(es.wavelengths, wavelengths, atol=0.01):
             raise RuntimeError(
                 "Exposure settings do not match config wavelengths. "
                 "Run brightness_calibration() first."
             )
 
+        pol_label = {True: 'xpol_', False: 'ypol_', None: ''}[xpol]
         self.filterwheel.set_position(cfg.black_pos)
         self.camera.arm()
         time.sleep(0.1)
         images = []
         try:
             for i in range(len(wavelengths)):
-                self.camera.set_exposure_time_us(int(self.exposure_settings.exposure_ms[i] * 1000))
-                self.camera.set_gain(self.exposure_settings.gain[i])
+                self.camera.set_exposure_time_us(int(es.exposure_ms[i] * 1000))
+                self.camera.set_gain(es.gain[i])
                 image = self.camera.get_image(
                     num_frames_to_average=cfg.num_frames_to_average,
                     num_frames_to_drop=cfg.num_frames_to_drop,
@@ -329,17 +411,26 @@ class Control:
         save_dir = Path(cfg.save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        save_path = save_dir / f'black_{timestamp}.npz'
+        save_path = save_dir / f'black_{pol_label}{timestamp}.npz'
         np.savez(save_path, wavelengths=wavelengths, images=np.stack(images))
         return save_path
 
-    def sample_measurement(self) -> Path:
+    def sample_measurement(self, xpol: bool | None = None) -> Path:
         """Capture one sample image per sweep wavelength and save as NPZ.
 
         Moves the monochromator, filter wheel, and focus motor to per-wavelength
         positions.  Focus movement is skipped when the motor is already within
         0.5 motor units of the target.  Uses per-wavelength exposure and gain
-        from :attr:`exposure_settings` and positions from :attr:`focus_settings`.
+        from the polarization-selected :attr:`exposure_settings` and positions
+        from :attr:`focus_settings`.
+
+        Parameters
+        ----------
+        xpol : bool or None
+            ``True`` moves the polarizer to x-polarization and uses
+            :attr:`exposure_settings_x`; ``False`` uses y-polarization and
+            :attr:`exposure_settings_y`; ``None`` skips polarizer movement and
+            uses the unpolarized :attr:`exposure_settings`.
 
         Returns
         -------
@@ -354,8 +445,15 @@ class Control:
         cfg = self.config
         wavelengths = np.linspace(cfg.wvl_start, cfg.wvl_stop, cfg.wvl_num)
 
+        if xpol is not None:
+            angle = cfg.polarizer_x_position + (0 if xpol else 90)
+            self.polarizer.move_to(angle)
+            self.polarizer.wait_move()
+
+        es, _ = self._exposure_settings_for(xpol)
+
         for settings, name in (
-            (self.exposure_settings.wavelengths, "Exposure"),
+            (es.wavelengths, "Exposure"),
             (self.focus_settings.wavelengths, "Focus"),
         ):
             if len(settings) != len(wavelengths) or not np.allclose(settings, wavelengths, atol=0.01):
@@ -385,8 +483,8 @@ class Control:
                     self.focus.move_to(target_m)
                     self.focus.wait_move()
 
-                self.camera.set_exposure_time_us(int(self.exposure_settings.exposure_ms[i] * 1000))
-                self.camera.set_gain(self.exposure_settings.gain[i])
+                self.camera.set_exposure_time_us(int(es.exposure_ms[i] * 1000))
+                self.camera.set_gain(es.gain[i])
                 image = self.camera.get_image(
                     num_frames_to_average=cfg.num_frames_to_average,
                     num_frames_to_drop=cfg.num_frames_to_drop,
@@ -396,9 +494,10 @@ class Control:
         finally:
             self.camera.disarm()
 
+        pol_label = {True: 'xpol_', False: 'ypol_', None: ''}[xpol]
         save_dir = Path(cfg.save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        save_path = save_dir / f'sample_{timestamp}.npz'
+        save_path = save_dir / f'sample_{pol_label}{timestamp}.npz'
         np.savez(save_path, wavelengths=wavelengths, images=np.stack(images))
         return save_path
