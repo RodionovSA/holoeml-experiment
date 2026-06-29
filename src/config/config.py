@@ -58,27 +58,35 @@ class Config:
     :meth:`from_yaml` to persist and restore a configuration.
     """
 
-    # Monochromator
-    monochromator_port: str
-    """Serial port for the Arduino monochromator controller (e.g. ``'COM4'``)."""
-    monochromator_grating_mode: str
-    """Active grating mode: ``'VIS Grating'``, ``'IR Grating'``, or ``'Switch Mode'``."""
+    # ── Wavelength sweep (required) ───────────────────────────────────────────
     wvl_start: float
     """Start wavelength of the sweep (nm)."""
     wvl_stop: float
     """Stop wavelength of the sweep (nm)."""
     wvl_num: int
-    """Number of wavelength steps in the sweep."""
+    """Number of wavelength steps in the sweep (linspace)."""
     filter_wvl: float
-    """Wavelength to turn on the logpass filter"""
+    """Wavelength (nm) at which the long-pass filter is inserted."""
 
-    # Camera
+    # ── Monochromator (required) ──────────────────────────────────────────────
+    monochromator_port: str
+    """Serial port for the Arduino monochromator controller (e.g. ``'COM4'``). Leave empty to be prompted at runtime."""
+    monochromator_grating_mode: str
+    """Active grating mode: ``'VIS Grating'``, ``'IR Grating'``, or ``'Switch Mode'``."""
+
+    # ── Camera (required) ─────────────────────────────────────────────────────
     camera_serial: str
     """Serial number string of the Thorlabs camera."""
-    exposure_settings_path: str = "exposure_settings.json"
-    """Path to the per-wavelength exposure settings JSON file."""
-    focus_settings_path: str = "focus_settings.json"
-    """Path to the per-wavelength focus positions JSON file."""
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Optional fields — all parameters below have defaults
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # ── Wavelength sweep ──────────────────────────────────────────────────────
+    default_wavelength: float = 550.0
+    """Wavelength (nm) the system returns to after init, calibration, and measurement."""
+
+    # ── Camera ────────────────────────────────────────────────────────────────
     camera_black_level: int = 0
     """Camera black level offset."""
     camera_bit_depth: str = 'uint16'
@@ -86,7 +94,29 @@ class Config:
     camera_out_bit_depth: str = 'float32'
     """Output image dtype after averaging (e.g. ``'float32'``, ``'float64'``)."""
 
-    # Brightness calibration
+    # ── Focus motor ───────────────────────────────────────────────────────────
+    focus_serial: str = ""
+    """Serial number string of the Thorlabs Kinesis focus motor."""
+    default_focus_position: float | None = None
+    """Focus motor position (mm) the system returns to between operations. ``None`` skips focus movement."""
+    default_focus_max_velocity: float | None = None
+    """Focus motor max velocity (mm/s). ``None`` skips."""
+    default_focus_acceleration: float | None = None
+    """Focus motor acceleration (mm/s²). ``None`` skips."""
+
+    # ── Filter wheel ──────────────────────────────────────────────────────────
+    filterwheel_address: str = ""
+    """VISA / USB address of the Newport filter wheel (e.g. ``'USB0::...'``)."""
+    filterwheel_timeout: int = 2000
+    """Communication timeout for the filter wheel (ms)."""
+    filterwheel_empty_pos: int = 1
+    """Filter wheel position (1–6) of the open/transmission window."""
+    longpass_pos: int = 3
+    """Filter wheel position (1–6) of the long-pass filter."""
+    black_pos: int = 4
+    """Filter wheel position (1–6) that blocks all light (beam block)."""
+
+    # ── Brightness calibration ────────────────────────────────────────────────
     calib_target_brightness: float = 0.5
     """Target mean pixel value (normalised 0–1) for brightness calibration."""
     calib_tolerance: float = 0.02
@@ -95,6 +125,8 @@ class Config:
     """Multiplicative step size (±10% per iteration) for exposure time adjustment."""
     calib_gain_step_db: float = 0.5
     """Fixed gain step in dB per iteration (1 dB = 10 SDK units). Additive, not multiplicative."""
+    calib_priority: str = 'exposure_time'
+    """Which control to exhaust first: ``'exposure_time'`` or ``'gain'``."""
     calib_max_steps: int = 50
     """Maximum iterations per wavelength before giving up."""
     calib_max_exposure_ms: int = 500
@@ -103,8 +135,6 @@ class Config:
     """Starting exposure in milliseconds for the first wavelength."""
     calib_initial_gain: int = 0
     """Starting gain for the first wavelength."""
-    calib_priority: str = 'exposure_time'
-    """Which control to exhaust first: ``'exposure_time'`` or ``'gain'``."""
     calib_num_frames_to_average: int = 1
     """Frames to average per brightness measurement."""
     calib_num_frames_to_drop: int = 5
@@ -112,33 +142,7 @@ class Config:
     calib_delay: float = 0.0
     """Delay in seconds between frame captures during calibration."""
 
-    # Default state
-    default_wavelength: float = 550.0
-    """Wavelength (nm) the system returns to after init, calibration, and measurement."""
-    default_focus_position: float | None = None
-    """Focus motor position (mm) the system returns to after init, calibration, and measurement. ``None`` skips focus movement."""
-    default_focus_max_velocity: float | None = None
-    """Focus motor max velocity (mm/s). ``None`` skips."""
-    default_focus_acceleration: float | None = None
-    """Focus motor acceleration (mm/s²). ``None`` skips."""
-
-    # z-translation motor
-    focus_serial: str = ""
-    """Serial number string of the Thorlabs Kinesis focus motor."""
-
-    # Filterwheel
-    filterwheel_address: str = ""
-    """VISA / serial address of the filter wheel controller."""
-    filterwheel_timeout: int = 2000
-    """Communication timeout for the filter wheel (ms)."""
-    black_pos: int = 4  # 1-6
-    """Filter wheel position (1–6) that blocks all light (beam block)."""
-    longpass_pos: int = 3  # 1-6
-    """Filter wheel position (1–6) of the long-pass filter."""
-    filterwheel_empty_pos: int = 1  # 1-6
-    """Filter wheel position (1–6) of the open/transmission window."""
-
-    # Measurements (reference, black, sample)
+    # ── Measurements ──────────────────────────────────────────────────────────
     save_dir: str = '.'
     """Directory where all measurement NPZ files are saved (reference, black, sample)."""
     num_frames_to_average: int = 1
@@ -147,10 +151,14 @@ class Config:
     """Frames to discard before averaging for all measurement types."""
     capture_delay: float = 0.0
     """Delay in seconds between frame captures for all measurement types."""
+    exposure_settings_path: str = "exposure_settings.json"
+    """Path to the per-wavelength exposure settings JSON file."""
+    focus_settings_path: str = "focus_settings.json"
+    """Path to the per-wavelength focus positions JSON file."""
 
-    # ------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
     # Serialisation helpers
-    # ------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
 
     def to_yaml(self, path: str | Path) -> None:
         """Write this configuration to a YAML file.

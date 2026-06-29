@@ -162,8 +162,6 @@ class Control:
                     and np.allclose(stored, wavelengths, atol=0.01)):
                 return
 
-        self.go_to_default_state()
-
         # Build per-wavelength seeds if using current stored values.
         stored = self.exposure_settings
         if (use_current_as_initial
@@ -217,7 +215,6 @@ class Control:
                 calibrated_brightnesses.append(brightness)
         finally:
             self.camera.disarm()
-            self.go_to_default_state()
 
         self.exposure_settings = ExposureSettings(
             wavelengths=calibrated_wavelengths,
@@ -255,7 +252,6 @@ class Control:
                 "Run brightness_calibration() first."
             )
 
-        self.go_to_default_state()
         self.camera.arm()
         time.sleep(0.1)
         images = []
@@ -278,7 +274,6 @@ class Control:
                 images.append(image)
         finally:
             self.camera.disarm()
-            self.go_to_default_state()
 
         save_dir = Path(cfg.save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
@@ -314,7 +309,6 @@ class Control:
                 "Run brightness_calibration() first."
             )
 
-        self.go_to_default_state()
         self.filterwheel.set_position(cfg.black_pos)
         self.camera.arm()
         time.sleep(0.1)
@@ -331,7 +325,6 @@ class Control:
                 images.append(image)
         finally:
             self.camera.disarm()
-            self.go_to_default_state()
 
         save_dir = Path(cfg.save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
@@ -376,7 +369,6 @@ class Control:
                 "default_focus_position must be set in config to use focus_settings offsets."
             )
 
-        self.go_to_default_state()
         self.camera.arm()
         time.sleep(0.1)
         images = []
@@ -403,7 +395,6 @@ class Control:
                 images.append(image)
         finally:
             self.camera.disarm()
-            self.go_to_default_state()
 
         save_dir = Path(cfg.save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)

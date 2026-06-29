@@ -1,48 +1,51 @@
-# Monochromator
-monochromator_port: COM4
-monochromator_grating_mode: VIS Grating
-wvl_start: 400.0
-wvl_stop: 1000.0
-wvl_num: 121
-filter_wvl: 600.0
+# ── Wavelength sweep ──────────────────────────────────────────────────────────
+wvl_start: 400.0            # nm
+wvl_stop: 1000.0            # nm
+wvl_num: 121                # number of steps (linspace)
+filter_wvl: 600.0           # nm — long-pass filter inserted above this wavelength
+default_wavelength: 550.0   # nm — resting wavelength between operations
 
-# Camera
+# ── Monochromator ─────────────────────────────────────────────────────────────
+monochromator_port: COM4                    # leave empty to be prompted at runtime
+monochromator_grating_mode: VIS Grating    # VIS Grating | IR Grating | Switch Mode
+
+# ── Camera ────────────────────────────────────────────────────────────────────
 camera_serial: '29236'
-exposure_settings_path: 'src/config/exposure_settings.json'
-focus_settings_path: 'src/config/focus_settings.json'
 camera_black_level: 0
-camera_bit_depth: 'uint16'
-camera_out_bit_depth: 'float32'
-calib_target_brightness: 0.6
-calib_tolerance: 0.02
-calib_increment: 0.1
+camera_bit_depth: 'uint16'       # raw frame dtype
+camera_out_bit_depth: 'float32'  # output dtype after averaging
+
+# ── Focus motor ───────────────────────────────────────────────────────────────
+focus_serial: '27256388'
+default_focus_position: 7.8047  # mm (reference position at 550 nm)
+default_focus_max_velocity: 0.5  # mm/s
+default_focus_acceleration: 0.5  # mm/s²
+
+# ── Filter wheel ──────────────────────────────────────────────────────────────
+filterwheel_address: 'USB0::0x104D::0x1011::7A01020F12162064::RAW'
+filterwheel_timeout: 2000  # ms
+filterwheel_empty_pos: 1   # open / no filter
+longpass_pos: 3            # long-pass filter
+black_pos: 4               # beam block
+
+# ── Brightness calibration ────────────────────────────────────────────────────
+calib_target_brightness: 0.6     # target mean pixel value, normalised 0–1
+calib_tolerance: 0.02            # acceptable deviation from target
+calib_increment: 0.1             # multiplicative step size per iteration (±10%)
+calib_gain_step_db: 0.5          # gain step in dB per iteration
+calib_priority: 'exposure_time'  # exposure_time | gain
 calib_max_steps: 50
 calib_max_exposure_ms: 500
 calib_initial_exposure_ms: 300
 calib_initial_gain: 0
-calib_priority: 'exposure_time'
 calib_num_frames_to_average: 1
 calib_num_frames_to_drop: 1
-calib_delay: 0.0
+calib_delay: 0.0                 # s — delay between captures
 
-# Default state
-default_focus_position: 7.8047   # mm (measured at 550 nm)
-default_focus_max_velocity: 0.5   # mm/s
-default_focus_acceleration: 0.5  # mm/s²
-
-# z-translation motor
-focus_serial: '27256388'
-
-# Filterwheel
-filterwheel_address: 'USB0::0x104D::0x1011::7A01020F12162064::RAW'
-filterwheel_timeout: 2000
-black_pos: 4
-longpass_pos: 3
-filterwheel_empty_pos: 1
-
-# Measurements (reference, black, sample)
+# ── Measurements ──────────────────────────────────────────────────────────────
 save_dir: '.'
 num_frames_to_average: 5
 num_frames_to_drop: 1
-capture_delay: 0.0
-
+capture_delay: 0.0               # s — delay between captures
+exposure_settings_path: 'src/config/exposure_settings.json'
+focus_settings_path: 'src/config/focus_settings.json'
