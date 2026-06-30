@@ -219,6 +219,28 @@ class Control:
         print(f'[autofocus] best position: {best_mm:.4f} mm')
         return best_mm
 
+    def _map_wavelengths(self,
+                         settings_wavelengths: list[float],
+                         config_wavelengths: np.ndarray,
+                         name: str,
+                         atol: float = 0.01) -> list[int]:
+        """Return indices into *settings_wavelengths* for each wavelength in *config_wavelengths*.
+
+        Raises RuntimeError if any config wavelength has no match within *atol* nm.
+        """
+        settings_arr = np.array(settings_wavelengths)
+        indices = []
+        for wvl in config_wavelengths:
+            diffs = np.abs(settings_arr - wvl)
+            idx = int(np.argmin(diffs))
+            if diffs[idx] > atol:
+                raise RuntimeError(
+                    f"{name} settings do not cover wavelength {wvl:.2f} nm. "
+                    "Run calibration first."
+                )
+            indices.append(idx)
+        return indices
+
     def brightness_calibration(self,
                                override: bool = False,
                                use_current_as_initial: bool = False,
@@ -250,18 +272,21 @@ class Control:
         current_settings, settings_path = self._exposure_settings_for(xpol)
 
         if not override:
-            stored = current_settings.wavelengths
-            if (len(stored) == len(wavelengths)
-                    and np.allclose(stored, wavelengths, atol=0.01)):
-                return
+            try:
+                self._map_wavelengths(current_settings.wavelengths, wavelengths, "Exposure")
+                return  # all config wavelengths already calibrated
+            except RuntimeError:
+                pass
 
         # Build per-wavelength seeds if using current stored values.
-        stored = current_settings
-        if (use_current_as_initial
-                and len(stored.wavelengths) == len(wavelengths)
-                and np.allclose(stored.wavelengths, wavelengths, atol=0.01)):
-            init_exp_us = [int(e * 1000) for e in stored.exposure_ms]
-            init_gain = list(stored.gain)
+        if use_current_as_initial:
+            try:
+                seed_idx = self._map_wavelengths(current_settings.wavelengths, wavelengths, "Exposure")
+                init_exp_us = [int(current_settings.exposure_ms[j] * 1000) for j in seed_idx]
+                init_gain = [current_settings.gain[j] for j in seed_idx]
+            except RuntimeError:
+                init_exp_us = None
+                init_gain = None
         else:
             init_exp_us = None
             init_gain = None
@@ -310,19 +335,37 @@ class Control:
         finally:
             self.camera.disarm()
 
-        new_settings = ExposureSettings(
-            wavelengths=calibrated_wavelengths,
-            exposure_ms=calibrated_exposures,
-            gain=calibrated_gains,
-            best_brightness=calibrated_brightnesses,
+        # Merge calibrated results into the existing stored settings.
+        stored_wvls = np.array(current_settings.wavelengths)
+        merged = ExposureSettings(
+            wavelengths=list(current_settings.wavelengths),
+            exposure_ms=list(current_settings.exposure_ms),
+            gain=list(current_settings.gain),
+            best_brightness=list(current_settings.best_brightness),
         )
+        for k, wvl in enumerate(calibrated_wavelengths):
+            diffs = np.abs(stored_wvls - wvl) if len(stored_wvls) else np.array([float('inf')])
+            idx = int(np.argmin(diffs))
+            if len(stored_wvls) and diffs[idx] <= 0.01:
+                merged.exposure_ms[idx] = calibrated_exposures[k]
+                merged.gain[idx] = calibrated_gains[k]
+                merged.best_brightness[idx] = calibrated_brightnesses[k]
+            else:
+                # New wavelength not previously in file — insert in sorted order.
+                pos = int(np.searchsorted(stored_wvls, wvl))
+                merged.wavelengths.insert(pos, float(wvl))
+                merged.exposure_ms.insert(pos, calibrated_exposures[k])
+                merged.gain.insert(pos, calibrated_gains[k])
+                merged.best_brightness.insert(pos, calibrated_brightnesses[k])
+                stored_wvls = np.insert(stored_wvls, pos, wvl)
+
         if xpol is True:
-            self.exposure_settings_x = new_settings
+            self.exposure_settings_x = merged
         elif xpol is False:
-            self.exposure_settings_y = new_settings
+            self.exposure_settings_y = merged
         else:
-            self.exposure_settings = new_settings
-        new_settings.save(settings_path)
+            self.exposure_settings = merged
+        merged.save(settings_path)
 
     def reference_measurement(self, xpol: bool | None = None) -> Path:
         """Capture one reference image per sweep wavelength and save as NPZ.
@@ -359,11 +402,7 @@ class Control:
             self.polarizer.wait_move()
 
         es, _ = self._exposure_settings_for(xpol)
-        if len(es.wavelengths) != len(wavelengths) or not np.allclose(es.wavelengths, wavelengths, atol=0.01):
-            raise RuntimeError(
-                "Exposure settings do not match config wavelengths. "
-                "Run brightness_calibration() first."
-            )
+        es_idx = self._map_wavelengths(es.wavelengths, wavelengths, "Exposure")
 
         self.camera.arm()
         time.sleep(0.1)
@@ -376,8 +415,8 @@ class Control:
                 if self.filterwheel.get_position() != fw_pos:
                     self.filterwheel.set_position(fw_pos)
 
-                self.camera.set_exposure_time_us(int(es.exposure_ms[i] * 1000))
-                self.camera.set_gain(es.gain[i])
+                self.camera.set_exposure_time_us(int(es.exposure_ms[es_idx[i]] * 1000))
+                self.camera.set_gain(es.gain[es_idx[i]])
 
                 image = self.camera.get_image(
                     num_frames_to_average=cfg.num_frames_to_average,
@@ -425,11 +464,7 @@ class Control:
         wavelengths = np.linspace(cfg.wvl_start, cfg.wvl_stop, cfg.wvl_num)
 
         es, _ = self._exposure_settings_for(xpol)
-        if len(es.wavelengths) != len(wavelengths) or not np.allclose(es.wavelengths, wavelengths, atol=0.01):
-            raise RuntimeError(
-                "Exposure settings do not match config wavelengths. "
-                "Run brightness_calibration() first."
-            )
+        es_idx = self._map_wavelengths(es.wavelengths, wavelengths, "Exposure")
 
         pol_label = {True: 'xpol_', False: 'ypol_', None: ''}[xpol]
         self.filterwheel.set_position(cfg.black_pos)
@@ -439,8 +474,8 @@ class Control:
         try:
             for i in range(len(wavelengths)):
                 print(f"wavelength {wavelengths[i]}")
-                self.camera.set_exposure_time_us(int(es.exposure_ms[i] * 1000))
-                self.camera.set_gain(es.gain[i])
+                self.camera.set_exposure_time_us(int(es.exposure_ms[es_idx[i]] * 1000))
+                self.camera.set_gain(es.gain[es_idx[i]])
                 image = self.camera.get_image(
                     num_frames_to_average=cfg.num_frames_to_average,
                     num_frames_to_drop=cfg.num_frames_to_drop,
@@ -493,16 +528,8 @@ class Control:
             self.polarizer.wait_move()
 
         es, _ = self._exposure_settings_for(xpol)
-
-        for settings, name in (
-            (es.wavelengths, "Exposure"),
-            (self.focus_settings.wavelengths, "Focus"),
-        ):
-            if len(settings) != len(wavelengths) or not np.allclose(settings, wavelengths, atol=0.01):
-                raise RuntimeError(
-                    f"{name} settings do not match config wavelengths. "
-                    "Run calibration first."
-                )
+        es_idx    = self._map_wavelengths(es.wavelengths, wavelengths, "Exposure")
+        focus_idx = self._map_wavelengths(self.focus_settings.wavelengths, wavelengths, "Focus")
 
         if cfg.focus_use_current_position:
             focus_base_mm = self.focus.get_position() * 1e3
@@ -528,11 +555,11 @@ class Control:
                     self.filterwheel.set_position(fw_pos)
 
                 # Set camera settings
-                self.camera.set_exposure_time_us(int(es.exposure_ms[i] * 1000))
-                self.camera.set_gain(es.gain[i])
+                self.camera.set_exposure_time_us(int(es.exposure_ms[es_idx[i]] * 1000))
+                self.camera.set_gain(es.gain[es_idx[i]])
 
                 # Set focus position
-                stored_target_mm = focus_base_mm + self.focus_settings.offsets[i]
+                stored_target_mm = focus_base_mm + self.focus_settings.offsets[focus_idx[i]]
                 if cfg.autofocus_enabled:
                     range_idx = self._get_wavelength_range_idx(wvl)
                     if range_idx not in range_corrections:
@@ -571,7 +598,7 @@ class Control:
             for range_idx, correction_mm in range_corrections.items():
                 for j, wvl_j in enumerate(wavelengths):
                     if self._get_wavelength_range_idx(wvl_j) == range_idx:
-                        self.focus_settings.offsets[j] += correction_mm
+                        self.focus_settings.offsets[focus_idx[j]] += correction_mm
             self.save_focus_settings()
 
         pol_label = {True: 'xpol_', False: 'ypol_', None: ''}[xpol]
