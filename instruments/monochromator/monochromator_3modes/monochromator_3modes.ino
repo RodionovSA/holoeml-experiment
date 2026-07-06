@@ -33,6 +33,13 @@
 //        ERR: no_mode               (mode not selected yet)
 //        OK: stopped                (after `stop` during a move)
 //
+//   in : jog <signed_steps>          (relative raw move; no calibration/bounds)
+//   in : move <signed_steps>         (absolute raw move to a step from home 0)
+//   out: INFO: moving_steps <target>
+//        OK: moved <pos>
+//        ERR: invalid_move
+//        OK: stopped                (after `stop` during a move)
+//
 //   in : stop                       (interrupts an in-progress move)
 //   out: OK: stopped
 //
@@ -89,6 +96,8 @@ bool         motorHomed  = false;
 void homeMotor();
 void handleModeCommand(const String& input);
 void handleWavelengthCommand(const String& input);
+void handleManualMoveCommand(const String& input, bool relative);
+bool runToTargetWithStop();
 void reportStatus();
 
 // =====================================================================
@@ -124,6 +133,10 @@ void loop() {
     handleModeCommand(input);
   } else if (input.startsWith("wavelength")) {
     handleWavelengthCommand(input);
+  } else if (input.startsWith("jog")) {
+    handleManualMoveCommand(input, /*relative=*/true);
+  } else if (input.startsWith("move")) {
+    handleManualMoveCommand(input, /*relative=*/false);
   } else if (input == "status") {
     reportStatus();
   } else if (input == "stop") {
@@ -261,6 +274,17 @@ void handleWavelengthCommand(const String& input) {
   Serial.println(wavelength);
 
   stepper.moveTo(targetSteps);
+  if (runToTargetWithStop()) return;
+
+  Serial.print("OK: wavelength ");
+  Serial.println(wavelength);
+}
+
+// Run to the currently-set target (via stepper.moveTo/move), allowing
+// `stop` to interrupt mid-move. Returns true if interrupted (in which
+// case "OK: stopped" has already been printed); false if it ran to
+// completion (caller prints its own OK on that path).
+bool runToTargetWithStop() {
   while (stepper.distanceToGo() != 0) {
     stepper.run();
 
@@ -271,14 +295,39 @@ void handleWavelengthCommand(const String& input) {
         stepper.stop();
         while (stepper.isRunning()) stepper.run();   // smooth deceleration
         Serial.println("OK: stopped");
-        return;
+        return true;
       }
       // Any other command received mid-move is dropped.
     }
   }
+  return false;
+}
 
-  Serial.print("OK: wavelength ");
-  Serial.println(wavelength);
+// `jog <signed_steps>`  — relative raw move by a signed step delta.
+// `move <signed_steps>` — absolute raw move to a step position (from home 0).
+// No calibration, no wavelength bounds check: the point of this command
+// is to reach steps (e.g. the zero diffraction order) outside the
+// wavelength-calibrated range. Does not require a grating mode.
+void handleManualMoveCommand(const String& input, bool relative) {
+  int sp = input.indexOf(' ');
+  if (sp < 0) {
+    Serial.println("ERR: invalid_move");
+    return;
+  }
+  long steps = input.substring(sp + 1).toInt();   // toInt() handles leading '-'
+
+  if (relative) {
+    stepper.move(steps);
+  } else {
+    stepper.moveTo(steps);
+  }
+  Serial.print("INFO: moving_steps ");
+  Serial.println(stepper.targetPosition());
+
+  if (runToTargetWithStop()) return;
+
+  Serial.print("OK: moved ");
+  Serial.println(stepper.currentPosition());
 }
 
 void reportStatus() {

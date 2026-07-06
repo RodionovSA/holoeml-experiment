@@ -1,9 +1,10 @@
 """Serial wrapper for the Arduino monochromator firmware.
 
-Windows-only at runtime (uses ``msvcrt`` for non-blocking keypress
-detection during wavelength moves). The module imports cleanly on
-other platforms for static analysis, but ``set_wavelength`` will raise
-if invoked without ``msvcrt`` available.
+Cross-platform. On Windows (``msvcrt`` available), the emergency-stop
+key (``EMERGENCY_STOP_KEY``, default ``'e'``) can be pressed during a
+move to interrupt it. On other platforms that keypress check is simply
+skipped; moves can still be interrupted via ``stop()`` from another
+thread.
 
 Talks to ``monochromator_3modes.ino`` over serial using the
 ``OK:`` / ``ERR:`` / ``INFO:`` line protocol documented in the firmware
@@ -46,6 +47,12 @@ class MonochromatorControl:
 
     VALID_MODES = ("VIS Grating", "IR Grating", "Switch Mode")
     MODE_VALUES = {"VIS Grating": 0, "IR Grating": 1, "Switch Mode": 2}
+
+    # Raw step position (from home 0) at which the grating passes the
+    # zero diffraction order, i.e. the undispersed lamp spectrum. Unknown
+    # until measured on hardware via the discovery procedure documented
+    # in goto_lamp_baseline(); set it here once known.
+    ZERO_ORDER_STEP = None
 
     # =================================================================
     # Lifecycle
@@ -160,13 +167,10 @@ class MonochromatorControl:
     def set_wavelength(self, wavelength=None):
         """Move the stepper to ``wavelength`` (nm). Prompts if not given.
         Press the emergency-stop key ('e' by default) during the move
-        to interrupt it."""
+        to interrupt it (Windows only; the keypress check is skipped
+        gracefully on other platforms)."""
         if not self._ready(require_init=True, require_homed=True, require_mode=True):
             return
-        if msvcrt is None:
-            raise RuntimeError(
-                "set_wavelength requires Windows (msvcrt unavailable)."
-            )
 
         if wavelength is None:
             wavelength = input("Enter the target wavelength (nm): ").strip()
@@ -177,23 +181,62 @@ class MonochromatorControl:
             return
 
         self._send(f"wavelength {wavelength}")
+        self._poll_until(("OK: wavelength", "OK: stopped", "ERR:"))
 
-        # Busy-poll so the emergency-stop keypress is detected with
-        # minimal latency. _wait_for is not used here because its
-        # blocking readline() would delay the keypress check.
-        terminal_prefixes = ("OK: wavelength", "OK: stopped", "ERR:")
-        while True:
-            if msvcrt.kbhit():
-                key = msvcrt.getch().decode("utf-8", errors="ignore").lower()
-                if key == self.EMERGENCY_STOP_KEY:
-                    self._send("stop")
-            if self.ser.in_waiting > 0:
-                line = self.ser.readline().decode(errors="replace").strip()
-                if not line:
-                    continue
-                print(line)
-                if any(line.startswith(p) for p in terminal_prefixes):
-                    return
+    def jog(self, steps):
+        """Relative raw move by a signed step count. No calibration or
+        wavelength bounds are applied — useful for hunting a raw motor
+        position (e.g. the zero-order/lamp-baseline step) that lies
+        outside the wavelength-calibrated range. Interruptible with the
+        emergency-stop key on Windows."""
+        if not self._ready(require_init=True):
+            return
+        self._send(f"jog {int(steps)}")
+        self._poll_until(("OK: moved", "OK: stopped", "ERR:"))
+
+    def move_to_step(self, steps):
+        """Absolute raw move to a step position measured from home 0.
+        Requires homing so the position has a fixed reference. No
+        calibration or wavelength bounds are applied."""
+        if not self._ready(require_init=True, require_homed=True):
+            return
+        self._send(f"move {int(steps)}")
+        self._poll_until(("OK: moved", "OK: stopped", "ERR:"))
+
+    def get_position(self):
+        """Return the current raw stepper position (int), parsed from
+        ``status``, or ``None`` if unavailable."""
+        line = self.status()
+        if not line:
+            return None
+        for token in line.split():          # INFO: mode=VIS homed=1 pos=1234
+            if token.startswith("pos="):
+                try:
+                    return int(token.split("=", 1)[1])
+                except ValueError:
+                    return None
+        return None
+
+    def goto_lamp_baseline(self):
+        """Move the grating to the zero diffraction order (the position
+        at which it acts as a mirror), passing the full, undispersed
+        lamp spectrum. Requires ``ZERO_ORDER_STEP`` to have been
+        determined on hardware first — see the discovery procedure:
+
+            mono.initialize_arduino(); mono.home_motor()
+            mono.jog(-50)   # coarse jog while watching the spectrometer
+            ...             # refine with small jogs to the intensity peak
+            mono.get_position()   # record this value as ZERO_ORDER_STEP
+
+        Requires homing (delegates to ``move_to_step``).
+        """
+        if self.ZERO_ORDER_STEP is None:
+            raise RuntimeError(
+                "ZERO_ORDER_STEP not calibrated yet — run the discovery "
+                "procedure (see goto_lamp_baseline docstring) and set "
+                "MonochromatorControl.ZERO_ORDER_STEP."
+            )
+        self.move_to_step(self.ZERO_ORDER_STEP)
 
     def stop(self):
         """Send an unsolicited ``stop``. Useful from another thread."""
@@ -232,6 +275,28 @@ class MonochromatorControl:
     def _send(self, command):
         """Write a single newline-terminated command to the Arduino."""
         self.ser.write(f"{command}\n".encode())
+
+    def _poll_until(self, terminal_prefixes):
+        """Busy-poll serial (printing each line as it arrives) until a
+        line starts with one of ``terminal_prefixes``, returning that
+        line. Used instead of ``_wait_for`` for in-progress moves so the
+        emergency-stop keypress is checked with minimal latency; on
+        Windows (``msvcrt`` available) pressing ``EMERGENCY_STOP_KEY``
+        sends ``stop``. On other platforms the keypress check is simply
+        skipped and the move can still be interrupted via ``stop()``
+        from another thread."""
+        while True:
+            if msvcrt is not None and msvcrt.kbhit():
+                key = msvcrt.getch().decode("utf-8", errors="ignore").lower()
+                if key == self.EMERGENCY_STOP_KEY:
+                    self._send("stop")
+            if self.ser.in_waiting > 0:
+                line = self.ser.readline().decode(errors="replace").strip()
+                if not line:
+                    continue
+                print(line)
+                if any(line.startswith(p) for p in terminal_prefixes):
+                    return line
 
     def _wait_for(self, ok_prefixes, err_prefixes=("ERR:",), timeout=None):
         """Read serial lines (printing each) until one starts with a
