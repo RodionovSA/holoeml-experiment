@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 from ctypes import (
     byref,
@@ -12,7 +13,14 @@ from ctypes import (
     create_string_buffer,
 )
 
-from .TLPM import (
+# Thorlabs' TLPM.py ctypes binding ships with the Optical Power Monitor install.
+# Point TLPM_PYTHON at the folder containing TLPM.py to override the default.
+DEFAULT_TLPM_DIR = r"C:\Program Files (x86)\IVI Foundation\VISA\WinNT\TLPM\Examples\Python"
+_tlpm_dir = os.environ.get("TLPM_PYTHON", DEFAULT_TLPM_DIR)
+if _tlpm_dir not in sys.path:
+    sys.path.insert(0, _tlpm_dir)
+
+from TLPM import (  # noqa: E402
     TLPM,
     TLPM_ATTR_SET_VAL,
     TLPM_AUTORANGE_POWER_OFF,
@@ -36,8 +44,10 @@ class PM400:
     range, unit) as plain Python floats/strings instead of raw ctypes calls.
 
     Windows only: the underlying driver loads ``TLPM_64.dll``/``TLPM_32.dll``
-    at construction time. The DLL directory defaults to the ``TLPM_BIN``
-    env var, falling back to the standard VISA install path.
+    at construction time. ``TLPM.py`` is imported from the Optical Power Monitor
+    install (``TLPM_PYTHON`` env var overrides the default path).  The DLL
+    directory defaults to the ``TLPM_BIN`` env var, falling back to the standard
+    VISA install path.
     """
 
     _UNIT_TO_CODE = {'W': TLPM_POWER_UNIT_WATT, 'DBM': TLPM_POWER_UNIT_DBM}

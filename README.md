@@ -34,6 +34,7 @@ will reuse the same shared `instruments/` drivers as amplitude once built out.
 | Polarizer | Polarizer on Thorlabs K10CR1 cage rotation stage | USB (Kinesis) |
 | Filter wheel | Newport USFW-100 (6-position) | USB (VISA) |
 | Power meter | Thorlabs PM400 | USB (VISA / TLPM) |
+| Spectrometer | Ocean Optics (OceanDirect-compatible) | USB |
 
 These drivers live under `instruments/` and are shared by every experiment in this repo. The monochromator firmware lives in `instruments/monochromator/monochromator_3modes/monochromator_3modes.ino` and must be flashed to the Arduino before first use.
 
@@ -82,7 +83,9 @@ This resolves `thorlabs-tsi-sdk` from the local path set in `pyproject.toml` —
 
 No manual step required. `instruments/pythorcam/windows_setup.py` automatically adds the `Native Toolkit/dlls/` directory to `PATH` at import time.
 
-The power meter driver (`instruments/powermeter/TLPM.py`) loads `TLPM_64.dll`, which ships with the [Thorlabs Optical Power Monitor](https://www.thorlabs.com/software_pages/ViewSoftwarePage.cfm?Code=OPM) / NI-VISA install. `instruments.powermeter.PM400` adds the standard install path (`C:\Program Files\IVI Foundation\VISA\Win64\Bin`) to the DLL search path automatically; override it via the `TLPM_BIN` env var or the `dll_dir=` constructor argument if installed elsewhere.
+The power meter driver imports `TLPM.py` from the [Thorlabs Optical Power Monitor](https://www.thorlabs.com/software_pages/ViewSoftwarePage.cfm?Code=OPM) install (`C:\Program Files (x86)\IVI Foundation\VISA\WinNT\TLPM\Examples\Python`); override via the `TLPM_PYTHON` env var. It then loads `TLPM_64.dll` from the VISA install; override via the `TLPM_BIN` env var or the `dll_dir=` constructor argument.
+
+The spectrometer driver (`instruments/spectrometer/spectrometer.py`) loads `OceanDirect.dll`, which ships with the [Ocean Optics OceanDirect SDK](https://www.oceanoptics.com/). `instruments.spectrometer.Spectrometer` adds the standard install path (`C:\Program Files\Ocean Optics\OceanDirect SDK\Python`) to both `sys.path` and the DLL search path automatically; override it via the `OCEANDIRECT_SDK` env var or the `sdk_dir=` constructor argument if installed elsewhere.
 
 ---
 
@@ -128,6 +131,7 @@ instruments/            # Shared hardware drivers, used by all experiments
   filterwheel/           # Newport USFW-100 driver via PyVISA
   kinesismotor/          # KinesisMotor — Kinesis stage control (focus + polarizer)
   powermeter/            # PM400 — Thorlabs optical power meter (TLPM ctypes driver)
+  spectrometer/          # Spectrometer — Ocean Optics spectrometer (OceanDirect SDK)
 
 amplitude/               # Amplitude experiment (implemented)
   control.py             # Top-level orchestrator — camera, monochromator, stages, filter wheel
