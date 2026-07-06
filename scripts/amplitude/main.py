@@ -1,5 +1,5 @@
-from src.config import Config
-from src.control import Control
+from amplitude.config import Config
+from amplitude.control import Control
 
 if __name__ == "__main__":
     # Initialize

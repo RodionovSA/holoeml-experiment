@@ -6,21 +6,22 @@ from pathlib import Path
 import numpy as np
 import time
 
-from pylablib.devices import Thorlabs
-from src.pythorcam.thorcam import ThorlabsCamera, create_camera_sdk
-from src.monochromator.mono import MonochromatorControl
-from src.filterwheel import FilterWheelControl
-from src.config import Config, ExposureSettings, FocusSettings
-from src.pythorcam.utils import brightness_calibration as _brightness_calibration
-from src.pythorcam.utils import autofocus as _autofocus
+from instruments.kinesismotor import KinesisMotor
+from instruments.monochromator.mono import MonochromatorControl
+from instruments.filterwheel import FilterWheelControl
+from instruments.pythorcam.thorcam import ThorlabsCamera, create_camera_sdk
+from instruments.pythorcam.utils import brightness_calibration as _brightness_calibration
+from instruments.pythorcam.utils import autofocus as _autofocus
+
+from amplitude.config import Config, ExposureSettings, FocusSettings
 
 
 class Control:
     def __init__(self,
                  camera: ThorlabsCamera,
                  monochromator: MonochromatorControl,
-                 focus: Thorlabs.KinesisMotor,
-                 polarizer: Thorlabs.KinesisMotor,
+                 focus: KinesisMotor,
+                 polarizer: KinesisMotor,
                  filterwheel: FilterWheelControl,
                  config: Config):
 
@@ -71,9 +72,9 @@ class Control:
 
             filterwheel = FilterWheelControl(config.filterwheel_address)
 
-            focus = Thorlabs.KinesisMotor(config.focus_serial, scale='stage')
+            focus = KinesisMotor(config.focus_serial, motor_type='stage')
 
-            polarizer = Thorlabs.KinesisMotor(config.polarizer_serial, scale="K10CR1")
+            polarizer = KinesisMotor(config.polarizer_serial, motor_type="K10CR1")
 
             ctrl = cls(camera, monochromator, focus, polarizer, filterwheel, config)
             ctrl.go_to_default_state()
@@ -157,7 +158,6 @@ class Control:
         if xpol is not None:
             angle = self.config.polarizer_x_position + (0 if xpol else 90)
             self.polarizer.move_to(angle)
-            self.polarizer.wait_move()
 
     def _set_filterwheel_for_wvl(self, wvl: float) -> None:
         cfg = self.config
@@ -217,7 +217,7 @@ class Control:
         vel_m   = cfg.autofocus_velocity_mm_s * _mm
         best_pos_m, _curve, _images = _autofocus(
             camera_trans=self.camera,
-            focus_motor=self.focus,
+            focus_motor=self.focus.km,
             start_position=start_m,
             end_position=end_m,
             step_size=step_m,
@@ -267,14 +267,13 @@ class Control:
         """
         self.mono.set_wavelength(self.config.default_wavelength)
         self.filterwheel.set_position(self.config.filterwheel_empty_pos)
-        _mm = 1e-3
+      
         v = self.config.default_focus_max_velocity
         a = self.config.default_focus_acceleration
         if v is not None or a is not None:
-            self.focus.setup_velocity(max_velocity=v * _mm, acceleration=a * _mm)
+            self.focus.set_velocity(max_velocity=v, acceleration=a)
         if self.config.default_focus_position is not None:
-            self.focus.move_to(self.config.default_focus_position * _mm)
-            self.focus.wait_move()
+            self.focus.move_to(self.config.default_focus_position)
         self.camera.set_settings(
             exposure_time_us=self.config.calib_initial_exposure_ms * 1000,
             gain=self.config.calib_initial_gain,
@@ -282,18 +281,16 @@ class Control:
             bit_depth=getattr(np, self.config.camera_bit_depth),
             out_bit_depth=getattr(np, self.config.camera_out_bit_depth),
         )
-        self.polarizer.setup_limit_switch(hw_kind_cw='make_home', hw_kind_ccw='make_home')
         if self.config.default_polarizer_home_velocity is not None:
             self.polarizer.setup_homing(velocity=self.config.default_polarizer_home_velocity)
         if not self.polarizer.is_homed():
-            self.polarizer.home(sync=True)
+            self.polarizer.home()
         v = self.config.default_polarizer_max_velocity
         a = self.config.default_polarizer_acceleration
         if v is not None or a is not None:
-            self.polarizer.setup_velocity(max_velocity=v, acceleration=a)
+            self.polarizer.set_velocity(max_velocity=v, acceleration=a)
         if self.config.polarizer_x_position is not None:
             self.polarizer.move_to(self.config.polarizer_x_position)
-            self.polarizer.wait_move()
 
     def brightness_calibration(self,
                                override: bool = False,
@@ -540,7 +537,7 @@ class Control:
         focus_idx = self._map_wavelengths(self.focus_settings.wavelengths, wavelengths, "Focus")
 
         if cfg.focus_use_current_position:
-            focus_base_mm = self.focus.get_position() * 1e3
+            focus_base_mm = self.focus.get_position()
         else:
             if cfg.default_focus_position is None:
                 raise RuntimeError(
@@ -561,25 +558,23 @@ class Control:
                     range_idx = self._get_wavelength_range_idx(wvl)
                     if range_idx not in range_corrections:
                         # First wavelength in this range: move to stored target then autofocus.
-                        self.focus.move_to(stored_target_mm * 1e-3)
-                        self.focus.wait_move()
+                        self.focus.move_to(stored_target_mm)
                         best_mm = self._run_autofocus(center_position_mm=stored_target_mm)
                         range_corrections[range_idx] = best_mm - stored_target_mm
                         print(f'[autofocus] range {range_idx}  wvl={wvl:.1f} nm  '
                               f'correction={range_corrections[range_idx]:+.4f} mm')
                         # Restore sweep velocity after the slow autofocus scan.
                         _v, _a = cfg.default_focus_max_velocity, cfg.default_focus_acceleration
-                        self.focus.setup_velocity(
-                            max_velocity=(_v * 1e-3 if _v is not None else None),
-                            acceleration=(_a * 1e-3 if _a is not None else None),
+                        self.focus.set_velocity(
+                            max_velocity=(_v if _v is not None else None),
+                            acceleration=(_a if _a is not None else None),
                         )
-                    target_m = (stored_target_mm + range_corrections[range_idx]) * 1e-3
+                    target_mm = (stored_target_mm + range_corrections[range_idx])
                 else:
-                    target_m = stored_target_mm * 1e-3
+                    target_mm = stored_target_mm
 
-                if abs(self.focus.get_position() - target_m) > 2e-6:
-                    self.focus.move_to(target_m)
-                    self.focus.wait_move()
+                if abs(self.focus.get_position() - target_mm) > 2e-3:
+                    self.focus.move_to(target_mm)
 
                 images.append(self.camera.get_image(
                     num_frames_to_average=cfg.num_frames_to_average,

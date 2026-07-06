@@ -1,4 +1,4 @@
-# Measurement protocol
+# Amplitude measurement protocol
 
 ## Connection
 Connect monochromator's arduino board and filter wheel, camera and z-translation stage through usb to your pc. 

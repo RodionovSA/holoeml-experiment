@@ -1,0 +1,1 @@
+from .kinesismotor import KinesisMotor

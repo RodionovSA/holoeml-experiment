@@ -1,8 +1,26 @@
-# holoeml-amp
+# holoeml-experiment
 
-A Python control system for wavelength-swept polarization-resolved optical spectroscopy. It orchestrates a monochromator, camera, motorized focus stage, polarizer rotation stage, and filter wheel to capture reference, dark, and sample image stacks across a configurable wavelength range.
+Control system and measurement code for **all experiments and measurements in
+the HoloEML project** — currently amplitude, with phase and characterization
+scaffolded to follow. Every experiment shares one set of hardware drivers
+(camera, monochromator, motorized stages, filter wheel) and orchestrates them
+to capture reference, dark, and sample image stacks across a configurable
+wavelength range.
 
 > **Windows only.** The Thorlabs TSI SDK ships as native Windows DLLs and is not available on Linux or macOS.
+
+---
+
+## Experiments
+
+| Experiment | Status | Code | Notebooks/scripts | Docs |
+|---|---|---|---|---|
+| **Amplitude** | Implemented | `amplitude/` | `scripts/amplitude/` | [`docs/amplitude_measurement_protocol.md`](docs/amplitude_measurement_protocol.md) |
+| **Phase** | Planned (scaffolded) | `phase/` | `scripts/phase/` | — |
+| **Characterization** | Planned (scaffolded) | `characterization/` | — | — |
+
+Phase and characterization folders are currently reserved but empty — they
+will reuse the same shared `instruments/` drivers as amplitude once built out.
 
 ---
 
@@ -16,7 +34,7 @@ A Python control system for wavelength-swept polarization-resolved optical spect
 | Polarizer | Polarizer on Thorlabs K10CR1 cage rotation stage | USB (Kinesis) |
 | Filter wheel | Newport USFW-100 (6-position) | USB (VISA) |
 
-The monochromator firmware lives in `src/monochromator/monochromator_3modes/monochromator_3modes.ino` and must be flashed to the Arduino before first use.
+These drivers live under `instruments/` and are shared by every experiment in this repo. The monochromator firmware lives in `instruments/monochromator/monochromator_3modes/monochromator_3modes.ino` and must be flashed to the Arduino before first use.
 
 ---
 
@@ -30,6 +48,8 @@ The monochromator firmware lives in `src/monochromator/monochromator_3modes/mono
 ---
 
 ## Setup
+
+Setup below is shared across all experiments — do it once per machine.
 
 ### 1. Install ThorCam and extract the SDK
 
@@ -59,112 +79,69 @@ This resolves `thorlabs-tsi-sdk` from the local path set in `pyproject.toml` —
 
 ### 3. DLL visibility
 
-No manual step required. `src/pythorcam/windows_setup.py` automatically adds the `Native Toolkit/dlls/` directory to `PATH` at import time.
+No manual step required. `instruments/pythorcam/windows_setup.py` automatically adds the `Native Toolkit/dlls/` directory to `PATH` at import time.
 
 ---
 
-## Configuration
+## Amplitude experiment
 
-Edit `src/config/config.yaml` before first use. The key fields to set per machine:
+Wavelength-swept, polarization-resolved image acquisition: for each polarization state (x, y, or none) it captures reference, dark, and sample stacks across the configured wavelength range.
 
-| Field | Description |
-|---|---|
-| `monochromator_port` | COM port of the Arduino (e.g. `COM4`) — leave empty to be prompted at runtime |
-| `camera_serial` | Serial number printed on the camera body |
-| `focus_serial` | Serial number of the Kinesis focus-motor controller |
-| `polarizer_serial` | Serial number of the Kinesis K10CR1 controller |
-| `polarizer_x_position` | Polarizer angle (deg) for x-polarization; y-polarization uses `+90°` automatically |
-| `filterwheel_address` | PyVISA USB address (e.g. `USB0::0x104D::0x1001::...::RAW`) |
-| `wvl_start` / `wvl_stop` / `wvl_num` | Sweep range (nm) and number of steps |
-| `save_dir` | Directory where measurement NPZ files are saved |
-| `calib_roi_fraction` | Central image fraction (0–1) used for brightness averaging; `null` = full frame |
-
-### Exposure settings files
-
-Because light intensity differs between polarization states, three separate per-wavelength exposure settings files are maintained:
-
-| File | Used when |
-|---|---|
-| `exposure_settings.json` | `xpol=None` — no polarizer movement |
-| `exposure_settings_xpol.json` | `xpol=True` — x-polarization |
-| `exposure_settings_ypol.json` | `xpol=False` — y-polarization |
-
-All three are generated automatically by `brightness_calibration()` and must be produced before the corresponding measurement.
-
-Per-wavelength focus settings are stored in `focus_settings.json` and generated during autofocus runs.
-
----
-
-## Usage
-
-For interactive use and development, open `test.ipynb` in Jupyter:
-
-```powershell
-uv run jupyter notebook test.ipynb
-```
-
-### Polarization-resolved measurement sequence
-
-All measurement methods accept an `xpol` parameter (`True` / `False` / `None`) that selects the polarization state and the matching exposure settings:
+- **Config**: `amplitude/config/config.yaml` (per-machine hardware config — serial numbers, ports, wavelength sweep range, save directory).
+- **Exposure settings**: three per-wavelength JSON files under `amplitude/config/` (`exposure_settings.json`, `_xpol.json`, `_ypol.json`), generated by `brightness_calibration()`.
+- **Run it**: `scripts/amplitude/main.py`, or interactively via the notebooks in `scripts/amplitude/` (e.g. `test.ipynb`).
 
 ```python
-from src.config import Config
-from src.control import Control
+from amplitude.config import Config
+from amplitude.control import Control
 
-cfg = Config.from_yaml('src/config/config.yaml')
+cfg = Config.from_yaml('amplitude/config/config.yaml')
 ctrl = Control.from_config(cfg)
 
-# --- x-polarization ---
-ctrl.brightness_calibration(xpol=True)   # calibrate and save exposure_settings_xpol.json
-ctrl.reference_measurement(xpol=True)    # polarizer moves to polarizer_x_position
-ctrl.black_measurement(xpol=True)        # polarizer not moved (beam blocked); uses xpol settings
-ctrl.sample_measurement(xpol=True)       # polarizer moves to polarizer_x_position
-
-# --- y-polarization ---
-ctrl.brightness_calibration(xpol=False)  # calibrate and save exposure_settings_ypol.json
-ctrl.reference_measurement(xpol=False)   # polarizer moves to polarizer_x_position + 90°
-ctrl.black_measurement(xpol=False)
-ctrl.sample_measurement(xpol=False)
-
-# --- no polarizer (legacy / unpolarized) ---
-ctrl.brightness_calibration(xpol=None)
-ctrl.reference_measurement(xpol=None)
-ctrl.black_measurement(xpol=None)
-ctrl.sample_measurement(xpol=None)
+ctrl.brightness_calibration(xpol=True)
+ctrl.reference_measurement(xpol=True)
+ctrl.black_measurement(xpol=True)
+ctrl.sample_measurement(xpol=True)
 ```
 
-Output filenames embed the polarization label:
-- `reference_xpol_<timestamp>.npz` / `reference_ypol_<timestamp>.npz` / `reference_<timestamp>.npz`
-- Same pattern for `black_` and `sample_`.
+Full protocol and step-by-step instructions: [`docs/amplitude_measurement_protocol.md`](docs/amplitude_measurement_protocol.md).
 
-### ROI brightness calibration
+---
 
-If the illumination does not fill the full camera frame, set `calib_roi_fraction` in the YAML to restrict brightness averaging to the central sub-region:
+## Phase experiment
 
-```yaml
-calib_roi_fraction: 0.6   # measure brightness over central 60%×60% of pixels
-```
-
-Leave it as `null` to use the full frame (default behaviour).
+Not yet implemented — `phase/` and `scripts/phase/` are reserved for the upcoming phase-measurement pipeline, which will build on the same shared `instruments/` drivers used by amplitude.
 
 ---
 
 ## Project structure
 
 ```
-src/
-  control.py            # Top-level orchestrator — camera, monochromator, focus motor, polarizer, filter wheel
-  config/
-    config.py           # Config, ExposureSettings, FocusSettings dataclasses
-    config.yaml         # Per-machine hardware configuration
-  pythorcam/
-    thorcam.py          # ThorlabsCamera wrapper
-    windows_setup.py    # Adds native DLLs to PATH at runtime
-    utils.py            # Live view, autofocus, brightness calibration
-  monochromator/
-    mono.py             # MonochromatorControl — serial wrapper for Arduino
+instruments/            # Shared hardware drivers, used by all experiments
+  pythorcam/             # ThorlabsCamera wrapper, live view / autofocus / brightness calibration
+  monochromator/         # MonochromatorControl — serial wrapper for Arduino
     monochromator_3modes/
       monochromator_3modes.ino  # Arduino firmware (AccelStepper)
-  filterwheel/
-    filterwheel.py      # Newport USFW-100 driver via PyVISA
+  filterwheel/           # Newport USFW-100 driver via PyVISA
+  kinesismotor/          # KinesisMotor — Kinesis stage control (focus + polarizer)
+
+amplitude/               # Amplitude experiment (implemented)
+  control.py             # Top-level orchestrator — camera, monochromator, stages, filter wheel
+  config/
+    config.py            # Config, ExposureSettings, FocusSettings dataclasses
+    config.yaml          # Per-machine hardware configuration
+    exposure_settings*.json
+    focus_settings.json
+  backup/
+
+phase/                   # Phase experiment (planned, scaffolded)
+
+characterization/        # Characterization measurements (planned, scaffolded)
+
+scripts/
+  amplitude/             # main.py entry point + interactive notebooks
+  phase/                 # (planned, scaffolded)
+
+docs/
+  amplitude_measurement_protocol.md
 ```
