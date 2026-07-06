@@ -49,10 +49,8 @@ class MonochromatorControl:
     MODE_VALUES = {"VIS Grating": 0, "IR Grating": 1, "Switch Mode": 2}
 
     # Raw step position (from home 0) at which the grating passes the
-    # zero diffraction order, i.e. the undispersed lamp spectrum. Unknown
-    # until measured on hardware via the discovery procedure documented
-    # in goto_lamp_baseline(); set it here once known.
-    ZERO_ORDER_STEP = None
+    # zero diffraction order, i.e. the undispersed lamp spectrum. 
+    ZERO_ORDER_STEP = 338
 
     # =================================================================
     # Lifecycle
