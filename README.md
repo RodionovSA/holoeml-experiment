@@ -33,6 +33,7 @@ will reuse the same shared `instruments/` drivers as amplitude once built out.
 | Focus motor | Thorlabs KDC101 controller + Z-axis stage | USB (Kinesis) |
 | Polarizer | Polarizer on Thorlabs K10CR1 cage rotation stage | USB (Kinesis) |
 | Filter wheel | Newport USFW-100 (6-position) | USB (VISA) |
+| Power meter | Thorlabs PM400 | USB (VISA / TLPM) |
 
 These drivers live under `instruments/` and are shared by every experiment in this repo. The monochromator firmware lives in `instruments/monochromator/monochromator_3modes/monochromator_3modes.ino` and must be flashed to the Arduino before first use.
 
@@ -81,6 +82,8 @@ This resolves `thorlabs-tsi-sdk` from the local path set in `pyproject.toml` —
 
 No manual step required. `instruments/pythorcam/windows_setup.py` automatically adds the `Native Toolkit/dlls/` directory to `PATH` at import time.
 
+The power meter driver (`instruments/powermeter/TLPM.py`) loads `TLPM_64.dll`, which ships with the [Thorlabs Optical Power Monitor](https://www.thorlabs.com/software_pages/ViewSoftwarePage.cfm?Code=OPM) / NI-VISA install. `instruments.powermeter.PM400` adds the standard install path (`C:\Program Files\IVI Foundation\VISA\Win64\Bin`) to the DLL search path automatically; override it via the `TLPM_BIN` env var or the `dll_dir=` constructor argument if installed elsewhere.
+
 ---
 
 ## Amplitude experiment
@@ -124,6 +127,7 @@ instruments/            # Shared hardware drivers, used by all experiments
       monochromator_3modes.ino  # Arduino firmware (AccelStepper)
   filterwheel/           # Newport USFW-100 driver via PyVISA
   kinesismotor/          # KinesisMotor — Kinesis stage control (focus + polarizer)
+  powermeter/            # PM400 — Thorlabs optical power meter (TLPM ctypes driver)
 
 amplitude/               # Amplitude experiment (implemented)
   control.py             # Top-level orchestrator — camera, monochromator, stages, filter wheel
