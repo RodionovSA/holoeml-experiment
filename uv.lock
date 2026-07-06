@@ -586,7 +586,7 @@ requires-dist = [
     { name = "pylablib", specifier = ">=1.4.5" },
     { name = "pyqt5-qt5", specifier = "<=5.15.2" },
     { name = "pyvisa", specifier = ">=1.16.2" },
-    { name = "thorlabs-tsi-sdk", path = "thorcam-sdk/Python Toolkit/thorlabs_tsi_camera_python_sdk_package.zip" },
+    { name = "thorlabs-tsi-sdk", path = "instruments/pythorcam/thorcam-sdk/Python Toolkit/thorlabs_tsi_camera_python_sdk_package.zip" },
 ]
 
 [package.metadata.requires-dev]
@@ -2506,7 +2506,7 @@ wheels = [
 [[package]]
 name = "thorlabs-tsi-sdk"
 version = "0.0.8"
-source = { path = "thorcam-sdk/Python Toolkit/thorlabs_tsi_camera_python_sdk_package.zip" }
+source = { path = "instruments/pythorcam/thorcam-sdk/Python Toolkit/thorlabs_tsi_camera_python_sdk_package.zip" }
 dependencies = [
     { name = "numpy" },
 ]
