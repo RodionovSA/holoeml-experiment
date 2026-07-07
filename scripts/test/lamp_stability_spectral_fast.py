@@ -31,7 +31,7 @@ if __name__ == "__main__":
     device_info = sp.identify()
 
     # Measurement parameters
-    duration_s = 60  # 1 minute
+    duration_s = 5 * 60  # 5 minutes
 
     print(f"Starting fast lamp stability run: as fast as possible for {duration_s} s")
     print(f"  integration time : {integration_time_us} µs")
@@ -85,7 +85,7 @@ if __name__ == "__main__":
         "Lamp spectral fast-scale stability test. "
         "Monochromator: VIS grating positioned at lamp baseline. "
         "Spectrometer acquires spectra as fast as possible (no averaging, n=1) for "
-        "1 minute at a fixed integration time (set once by autoexposure targeting 0.5 "
+        "5 minutes at a fixed integration time (set once by autoexposure targeting 0.5 "
         "fill fraction before the run; recorded in 'integration_time_us'). "
         "'spectra' is (n_samples, n_pixels) float64 counts; "
         "'wavelengths' is the nm axis; "
