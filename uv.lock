@@ -567,8 +567,12 @@ dependencies = [
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "opencv-python" },
-    { name = "pylablib" },
     { name = "pyqt5-qt5" },
+]
+
+[package.optional-dependencies]
+hardware = [
+    { name = "pylablib" },
     { name = "pyvisa" },
     { name = "thorlabs-tsi-sdk" },
 ]
@@ -583,11 +587,12 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.10.9" },
     { name = "numpy", specifier = ">=2.4.6" },
     { name = "opencv-python", specifier = ">=4.13.0.92" },
-    { name = "pylablib", specifier = ">=1.4.5" },
+    { name = "pylablib", marker = "extra == 'hardware'", specifier = ">=1.4.5" },
     { name = "pyqt5-qt5", specifier = "<=5.15.2" },
-    { name = "pyvisa", specifier = ">=1.16.2" },
-    { name = "thorlabs-tsi-sdk", path = "instruments/pythorcam/thorcam-sdk/Python Toolkit/thorlabs_tsi_camera_python_sdk_package.zip" },
+    { name = "pyvisa", marker = "extra == 'hardware'", specifier = ">=1.16.2" },
+    { name = "thorlabs-tsi-sdk", marker = "extra == 'hardware'", path = "instruments/pythorcam/thorcam-sdk/Python Toolkit/thorlabs_tsi_camera_python_sdk_package.zip" },
 ]
+provides-extras = ["hardware"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "jupyter", specifier = ">=1.1.1" }]
