@@ -2,3 +2,5 @@ instruments/pythorcam/thorcam-sdk/
 *__pycache__
 *.npz
 *.npy
+*.DS_store
+data/

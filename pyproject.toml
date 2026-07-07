@@ -15,8 +15,12 @@ dependencies = [
     "matplotlib>=3.10.9",
     "numpy>=2.4.6",
     "opencv-python>=4.13.0.92",
-    "pylablib>=1.4.5",
     "pyqt5-qt5<=5.15.2",
+]
+
+[project.optional-dependencies]
+hardware = [
+    "pylablib>=1.4.5",
     "pyvisa>=1.16.2",
     "thorlabs-tsi-sdk",
 ]
