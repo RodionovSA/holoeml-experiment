@@ -20,7 +20,8 @@ if __name__ == "__main__":
     # Run spectrometer
     sp = Spectrometer(serial="SR600410")
     sp.set_scans_to_average(n=1)
-    autoexposure(sp, target=0.6)
+    # autoexposure(sp, target=0.6)
+    sp.set_integration_time(10230)
     sp.set_scans_to_average(n=10)
 
     # Capture fixed acquisition settings and wavelength axis before the loop.
@@ -33,8 +34,8 @@ if __name__ == "__main__":
 
     # Measurement parameters
     interval_s = 1.0
-    duration_s = 90 * 60                             # 90 minutes
-    n_samples = int(duration_s / interval_s)         # 5400
+    duration_s = 240 * 60                             # 240 minutes
+    n_samples = int(duration_s / interval_s)         # 14400
 
     spectra = np.empty((n_samples, wavelengths.size), dtype=np.float64)
     elapsed = np.empty(n_samples, dtype=np.float64)  # seconds since t0
@@ -83,7 +84,7 @@ if __name__ == "__main__":
     description = (
         "Lamp spectral stability test. "
         "Monochromator: VIS grating positioned at lamp baseline. "
-        "Spectrometer acquires one spectrum per second for 90 minutes at a fixed "
+        "Spectrometer acquires one spectrum per second for 4 hours at a fixed "
         "integration time (set once by autoexposure before the run; recorded in "
         "'integration_time_us'). "
         "'spectra' is (n_samples, n_pixels) float64 counts; "
