@@ -4,3 +4,4 @@ instruments/pythorcam/thorcam-sdk/
 *.npy
 *.DS_store
 data/
+*.obsidian
