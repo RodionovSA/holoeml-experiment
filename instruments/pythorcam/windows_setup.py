@@ -18,7 +18,7 @@ import os
 import sys
 
 _this_dir = os.path.dirname(os.path.abspath(__file__))
-PATH = os.path.abspath(os.path.join(_this_dir, '..', '..', 'thorcam-sdk', 'Native Toolkit', 'dlls'))
+PATH = os.path.abspath(os.path.join(_this_dir, 'thorcam-sdk', 'Native Toolkit', 'dlls'))
 
 
 def configure_path():
