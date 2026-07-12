@@ -306,7 +306,8 @@ def autoexposure(camera: ThorlabsCamera,
                  max_number_of_steps: int,
                  num_frames_to_average: int = 1,
                  num_frames_to_drop: int = 5,
-                 delay: float = 0) -> int:
+                 delay: float = 0,
+                 roi_fraction: float | None = None) -> int:
     """Iteratively adjust exposure until the mean brightness hits target.
 
     Multiplicatively scales the exposure by (1 ± `increment`) each iteration,
@@ -329,6 +330,10 @@ def autoexposure(camera: ThorlabsCamera,
         Forwarded to `camera.get_image()`.
     delay : float
         Forwarded to `camera.get_image()`.
+    roi_fraction : float or None
+        If given, brightness is measured over the central ``roi_fraction``
+        fraction of image height and width (e.g. 0.5 = central 50%×50%).
+        ``None`` uses the full frame.
 
     Returns
     -------
@@ -343,8 +348,15 @@ def autoexposure(camera: ThorlabsCamera,
         image = camera.get_image(num_frames_to_average=int(num_frames_to_average),
                                  num_frames_to_drop=int(num_frames_to_drop),
                                  delay=delay)
-
-        mean_brightness = image.mean()
+        
+        if roi_fraction is not None:
+            h, w = image.shape[0], image.shape[1]
+            cy, cx = h // 2, w // 2
+            ry, rx = max(1, int(h * roi_fraction / 2)), max(1, int(w * roi_fraction / 2))
+            region = image[cy - ry : cy + ry, cx - rx : cx + rx]
+            mean_brightness = region.mean() 
+        else:
+            mean_brightness = image.mean() 
 
         if abs(mean_brightness - target_brightness) < tolerance:
             print(f'Target brightness reached: {mean_brightness}')
