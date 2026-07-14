@@ -241,6 +241,10 @@ class Control:
         Raises RuntimeError if any config wavelength has no match within *atol* nm.
         """
         settings_arr = np.array(settings_wavelengths)
+        if settings_arr.size == 0:
+            raise RuntimeError(
+                f"{name} settings are empty. Run calibration first."
+            )
         indices = []
         for wvl in config_wavelengths:
             diffs = np.abs(settings_arr - wvl)

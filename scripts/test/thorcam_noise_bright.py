@@ -12,17 +12,18 @@ import numpy as np
 SERIAL = "35596"
 BLACK_LEVEL = 0
 GAIN_RANGE = [0]
-ROI_FRACTION = 0.20        # central 20% x 20% sub-ROI (avoid vignetted edges)
+ROI_FRACTION = 0.10        # central 20% x 20% sub-ROI (avoid vignetted edges)
 NUM_SETTLE_FRAMES = 2      # dropped after each exposure change
 PROBE_EXPOSURE_US = 100_000   # starting probe to find the DN<->exposure scale
 MAX_EXPOSURE_US = 14_700_924  # CS126 hardware max
 MIN_EXPOSURE_US = 28
-TARGET_RANGE = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+TARGET_RANGE = [0.95, 0.96, 0.97, 0.98, 0.99, 0.995, 0.999]
 NUM_FRAMES = 50
 BIT_DEPTH = np.uint16
 OUT_BIT_DEPTH = np.float32
 
-AE_TOLERANCE_FRACTION = 0.02   # autoexposure stop tolerance, fraction of full well
+AE_TOLERANCE_RELATIVE = 0.02   # autoexposure stop tolerance, fraction of the target DN
+AE_TOLERANCE_FLOOR_DN = 1.0    # absolute floor so near-zero targets don't chase sub-DN precision
 AE_INCREMENT = 0.1             # multiplicative exposure step per autoexposure iteration
 AE_MAX_STEPS = 50
 
@@ -61,6 +62,19 @@ if __name__ == "__main__":
         n_gains = len(GAIN_RANGE)
         N_LEVELS = len(TARGET_RANGE)
 
+        # Cap autoexposure tolerance at half the distance (in fill fraction) to the
+        # nearest neighboring level, so closely spaced targets (e.g. the 0.95-0.999
+        # cluster) can't fall inside each other's acceptance window and collapse
+        # onto the same exposure.
+        level_gap_frac = np.empty(N_LEVELS)
+        for i in range(N_LEVELS):
+            neighbor_gaps = []
+            if i > 0:
+                neighbor_gaps.append(abs(TARGET_RANGE[i] - TARGET_RANGE[i - 1]))
+            if i < N_LEVELS - 1:
+                neighbor_gaps.append(abs(TARGET_RANGE[i + 1] - TARGET_RANGE[i]))
+            level_gap_frac[i] = min(neighbor_gaps)
+
         H, W = camera.image_shape
         roi_h = 2 * max(1, int(H * ROI_FRACTION / 2))
         roi_w = 2 * max(1, int(W * ROI_FRACTION / 2))
@@ -76,10 +90,15 @@ if __name__ == "__main__":
 
                 for i in range(N_LEVELS):
                     filterwheel.set_position(FILTERWHEEL_OPEN)
+                    target_dn = TARGET_RANGE[i] * pixel_max
+                    tolerance_dn = min(
+                        max(AE_TOLERANCE_RELATIVE * target_dn, AE_TOLERANCE_FLOOR_DN),
+                        0.5 * level_gap_frac[i] * pixel_max,
+                    )
                     exp = autoexposure(camera,
-                                       initial_exposure_time=PROBE_EXPOSURE_US,
-                                       target_brightness=TARGET_RANGE[i] * pixel_max,
-                                       tolerance=AE_TOLERANCE_FRACTION * pixel_max,
+                                       initial_exposure_time=int(exposures_us[gi, i-1]) if i>0 else PROBE_EXPOSURE_US,
+                                       target_brightness=target_dn,
+                                       tolerance=tolerance_dn,
                                        increment=AE_INCREMENT,
                                        max_number_of_steps=AE_MAX_STEPS,
                                        num_frames_to_drop=NUM_SETTLE_FRAMES,
@@ -87,7 +106,7 @@ if __name__ == "__main__":
                     exposures_us[gi, i] = exp
 
                     print(f"  level {i + 1}/{N_LEVELS}: exposure {exp} us "
-                          f"(target fill {TARGET_RANGE[i]:.2f})")
+                          f"(target fill {TARGET_RANGE[i]:.3f})")
 
                     for pi in range(NUM_FRAMES):
                         drop = NUM_SETTLE_FRAMES if pi == 0 else 0
