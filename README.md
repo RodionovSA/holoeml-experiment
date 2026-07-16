@@ -32,6 +32,7 @@ will reuse the same shared `instruments/` drivers as amplitude once built out.
 | Monochromator | Custom build — Arduino + stepper driver | USB serial (e.g. `COM4`) |
 | Focus motor | Thorlabs KDC101 controller + Z-axis stage | USB (Kinesis) |
 | Polarizer | Polarizer on Thorlabs K10CR1 cage rotation stage | USB (Kinesis) |
+| Precision piezo z-stage | Thorlabs CT1P cage-compatible z-axis stage, integrated piezo driver | USB (Kinesis .NET) |
 | Filter wheel | Newport USFW-100 (6-position) | USB (VISA) |
 | Power meter | Thorlabs PM400 | USB (VISA / TLPM) |
 | Spectrometer | Ocean Optics (OceanDirect-compatible) | USB |
@@ -100,7 +101,7 @@ see below) to pick up dependency changes.
 
 ### Vendor SDKs (hardware machines only)
 
-Three instruments need a vendor SDK installed separately — Python packaging
+Four instruments need a vendor SDK installed separately — Python packaging
 alone can't distribute them (native DLLs, or not published to PyPI).
 
 #### Thorlabs camera — ThorCam SDK
@@ -167,6 +168,28 @@ No manual PATH edits are needed — both defaults match a standard OPM install.
    `OCEANDIRECT_SDK` env var, or the `sdk_dir=` constructor argument, if
    installed elsewhere.
 
+#### Thorlabs CT1P precision piezo — Kinesis
+
+Unlike the focus/polarizer stages (`instruments/kinesismotor/`, driven through
+pylablib), the CT1P's integrated piezo actuator is a Kinesis device type
+(`IntegratedPrecisionPiezo`) that pylablib doesn't support. The driver
+(`instruments/precisionpiezo/precisionpiezo.py`) instead talks to the Kinesis
+.NET API directly via [`pythonnet`](https://pythonnet.github.io/) (installed
+as part of the `hardware` extra).
+
+1. Install **Kinesis** from the [Thorlabs Kinesis software page](https://www.thorlabs.com/software_pages/ViewSoftwarePage.cfm?Code=Motion_Control&viewtab=0) (version 1.14.26 or later — earlier releases predate CT1P support).
+2. The driver loads the Kinesis assemblies from the standard install path:
+   ```
+   C:\Program Files\Thorlabs\Kinesis
+   ```
+   Override with the `KINESIS_DIR` env var, or the `kinesis_dir=` constructor
+   argument, if installed elsewhere.
+3. Find the stage's serial number in the Kinesis GUI (or on the label) and
+   pass it to `PrecisionPiezoCT1P(serial)`.
+
+No manual PATH edits are needed — the driver calls `os.add_dll_directory` on
+the Kinesis install folder automatically.
+
 #### Monochromator firmware
 
 The monochromator is a custom Arduino build, not a vendor SDK — flash
@@ -215,7 +238,8 @@ instruments/            # Shared hardware drivers, used by all experiments
     monochromator_3modes/
       monochromator_3modes.ino  # Arduino firmware (AccelStepper)
   filterwheel/           # Newport USFW-100 driver via PyVISA
-  kinesismotor/          # KinesisMotor — Kinesis stage control (focus + polarizer)
+  kinesismotor/          # KinesisMotor — Kinesis stage control (focus + polarizer), via pylablib
+  precisionpiezo/        # PrecisionPiezoCT1P — CT1P integrated piezo z-stage, via Kinesis .NET/pythonnet
   powermeter/            # PM400 — Thorlabs optical power meter (TLPM ctypes driver)
   spectrometer/          # Spectrometer — Ocean Optics spectrometer (OceanDirect SDK)
 
