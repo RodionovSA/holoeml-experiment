@@ -17,10 +17,10 @@ camera_out_bit_depth: 'float32'  # output dtype after averaging
 
 # ── Focus motor ───────────────────────────────────────────────────────────────
 focus_serial: '27271402'
-default_focus_position: 17.6914  # mm (reference position at 550 nm)
+default_focus_position: 17.2607  # mm (reference position at 550 nm)
 default_focus_max_velocity: 0.2  # mm/s
 default_focus_acceleration: 0.2  # mm/s²
-focus_use_current_position: true               # true = per-wavelength offsets relative to current motor position at sweep start
+focus_use_current_position: false               # true = per-wavelength offsets relative to current motor position at sweep start
 
 # ── Polarizer motor ───────────────────────────────────────────────────────────
 polarizer_serial: '55001180'
@@ -53,7 +53,7 @@ calib_roi_fraction: 0.2         # null = full frame; e.g. 0.5 = central 50%×50%
 
 # ── Measurements ──────────────────────────────────────────────────────────────
 save_dir: '.'
-num_frames_to_average: 5
+num_frames_to_average: 10
 num_frames_to_drop: 1
 capture_delay: 0.0               # s — delay between captures
 exposure_settings_path: 'amplitude\config\exposure_settings.json'
@@ -62,7 +62,7 @@ exposure_settings_ypol_path: 'amplitude\config\exposure_settings_ypol.json'
 focus_settings_path: 'amplitude\config\focus_settings.json'
 
 # ── Autofocus ─────────────────────────────────────────────────────────────────
-autofocus_enabled: true                        # set to true to enable per-range autofocus
+autofocus_enabled: false                        # set to true to enable per-range autofocus
 autofocus_range_boundaries: [440.0, 465.0]      # nm — boundaries between focus regimes
 autofocus_scan_half_range_mm: 0.02              # mm — ±scan radius around stored focus target
 autofocus_step_size_mm: 0.002                   # mm — step size during scan
