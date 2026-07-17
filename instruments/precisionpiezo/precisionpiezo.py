@@ -39,6 +39,17 @@ class PrecisionPiezoCT1P:
 
     DEFAULT_KINESIS_DIR = r"C:\Program Files\Thorlabs\Kinesis"
 
+    # The Kinesis .NET API's unit conventions differ between position and voltage:
+    #   - GetMaxTravel is in raw steps of 100 nm (10000 == 1 mm).
+    #   - GetPosition/SetPosition are a signed percentage of max travel, scaled to
+    #     +/-32767 (== +/-100%).
+    #   - GetOutputVoltage/SetOutputVoltage/GetMinOutputVoltage/GetMaxOutputVoltage,
+    #     by contrast, already report/accept real volts directly (confirmed empirically:
+    #     GetMaxOutputVoltage/GetMinOutputVoltage read exactly 140.0/-10.0, matching the
+    #     CT1P's documented -10..140 V range with no extra scaling) -- no conversion needed.
+    _TRAVEL_UNIT_UM = 0.1
+    _FULL_SCALE = 32767
+
     def __init__(
         self,
         serial: str,
@@ -117,7 +128,7 @@ class PrecisionPiezoCT1P:
         self.serial = serial
         device_info = self._device.GetDeviceInfo()
         self.model = device_info.Description
-        self.max_travel_um = self._from_decimal(self._device.GetMaxTravel())
+        self.max_travel_um = self._from_decimal(self._device.GetMaxTravel()) * self._TRAVEL_UNIT_UM
 
         self._closed = False
         print(f"Connected to {self.model} (SN {self.serial})")
@@ -130,7 +141,9 @@ class PrecisionPiezoCT1P:
         return self._Decimal(value)
 
     def _from_decimal(self, value) -> float:
-        return float(value.ToDouble()) if hasattr(value, "ToDouble") else float(value)
+        # System.Decimal.ToDouble is a *static* method (Decimal.ToDouble(d)), not an
+        # instance method, even though pythonnet makes it visible via hasattr(value, ...).
+        return float(self._Decimal.ToDouble(value)) if isinstance(value, self._Decimal) else float(value)
 
     # ------------------------------------------------------------------ #
     # Closed-loop position control (micrometers)                           #
@@ -146,7 +159,9 @@ class PrecisionPiezoCT1P:
         if not 0 <= position_um <= self.max_travel_um:
             raise ValueError(f"position_um must be 0-{self.max_travel_um}, got {position_um}")
         self.set_closed_loop()
-        self._device.SetPosition(self._to_decimal(position_um))
+        raw = round(position_um / self.max_travel_um * self._FULL_SCALE)
+        raw = max(0, min(self._FULL_SCALE, raw))
+        self._device.SetPosition(self._to_decimal(raw))
         self._wait_position(position_um, timeout=timeout)
 
     def move_by(self, delta_um: float, timeout: float = 30.0) -> None:
@@ -155,13 +170,14 @@ class PrecisionPiezoCT1P:
 
     def get_position(self) -> float:
         """Return the current closed-loop position in micrometers."""
-        return self._from_decimal(self._device.GetPosition())
+        raw = self._from_decimal(self._device.GetPosition())
+        return raw / self._FULL_SCALE * self.max_travel_um
 
     def get_max_travel(self) -> float:
         """Return the maximum closed-loop travel in micrometers (~160 µm for the CT1P)."""
         return self.max_travel_um
 
-    def _wait_position(self, target: float, tol: float = 0.1, timeout: float = 30.0) -> None:
+    def _wait_position(self, target: float, tol: float = 0.5, timeout: float = 30.0) -> None:
         """Block until get_position() is within tol of target, or raise TimeoutError."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -188,15 +204,20 @@ class PrecisionPiezoCT1P:
 
     def set_voltage(self, volts: float) -> None:
         """Set the output drive voltage directly (open loop, no position feedback)."""
+        min_volts = self.get_min_voltage()
         max_volts = self.get_max_voltage()
-        if not 0 <= volts <= max_volts:
-            raise ValueError(f"volts must be 0-{max_volts}, got {volts}")
+        if not min_volts <= volts <= max_volts:
+            raise ValueError(f"volts must be {min_volts}-{max_volts}, got {volts}")
         self.set_open_loop()
         self._device.SetOutputVoltage(self._to_decimal(volts))
 
     def get_voltage(self) -> float:
         """Return the current output drive voltage."""
         return self._from_decimal(self._device.GetOutputVoltage())
+
+    def get_min_voltage(self) -> float:
+        """Return the minimum output drive voltage (negative for the CT1P, e.g. -10 V)."""
+        return self._from_decimal(self._device.GetMinOutputVoltage())
 
     def get_max_voltage(self) -> float:
         """Return the maximum output drive voltage."""

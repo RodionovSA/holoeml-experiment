@@ -17,7 +17,7 @@ camera_out_bit_depth: 'float32'  # output dtype after averaging
 
 # ── Focus motor ───────────────────────────────────────────────────────────────
 focus_serial: '27271402'
-default_focus_position: 17.2607  # mm (reference position at 550 nm)
+default_focus_position: 17.2307  # mm (reference position at 550 nm)
 default_focus_max_velocity: 0.2  # mm/s
 default_focus_acceleration: 0.2  # mm/s²
 focus_use_current_position: false               # true = per-wavelength offsets relative to current motor position at sweep start
@@ -37,13 +37,13 @@ longpass_pos: 3            # long-pass filter
 black_pos: 4               # beam block
 
 # ── Brightness calibration ────────────────────────────────────────────────────
-calib_target_brightness: 0.7     # target mean pixel value, normalised 0–1
+calib_target_brightness: 0.5     # target mean pixel value, normalised 0–1
 calib_tolerance: 0.02            # acceptable deviation from target
 calib_increment: 0.1             # multiplicative step size per iteration (±10%)
 calib_gain_step_db: 0.5          # gain step in dB per iteration
 calib_priority: 'exposure_time'  # exposure_time | gain
 calib_max_steps: 50
-calib_max_exposure_ms: 1500
+calib_max_exposure_ms: 1000
 calib_initial_exposure_ms: 300
 calib_initial_gain: 0
 calib_num_frames_to_average: 1
