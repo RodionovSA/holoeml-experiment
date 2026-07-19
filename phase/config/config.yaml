@@ -1,0 +1,70 @@
+# ── Wavelength sweep ──────────────────────────────────────────────────────────
+wvl_start: 400.0            # nm
+wvl_stop: 1000.0            # nm
+wvl_num: 121                # number of steps (linspace)
+filter_wvl: 600.0           # nm — long-pass filter inserted above this wavelength
+default_wavelength: 550.0   # nm — resting wavelength between operations
+
+# ── Monochromator ─────────────────────────────────────────────────────────────
+monochromator_port: COM4                    # leave empty to be prompted at runtime
+monochromator_grating_mode: VIS Grating    # VIS Grating | IR Grating | Switch Mode
+
+# ── Camera ────────────────────────────────────────────────────────────────────
+camera_serial: '35596'
+camera_black_level: 0
+camera_bit_depth: 'uint16'       # raw frame dtype
+camera_out_bit_depth: 'float32'  # output dtype after averaging
+
+# ── Focus motor ───────────────────────────────────────────────────────────────
+focus_serial: '27271402'
+default_focus_position: 17.2445  # mm (reference position at 550 nm)
+default_focus_max_velocity: 0.2  # mm/s
+default_focus_acceleration: 0.2  # mm/s²
+focus_use_current_position: false               # true = per-wavelength offsets relative to current motor position at sweep start
+
+# ── Polarizer motor ───────────────────────────────────────────────────────────
+polarizer_serial: '55001180'
+polarizer_x_position: 175 # deg
+default_polarizer_home_velocity: 10  # deg/s
+default_polarizer_max_velocity: 10  # deg/s
+default_polarizer_acceleration: 15  # deg/s²
+
+# ── Filter wheel ──────────────────────────────────────────────────────────────
+filterwheel_address: 'USB0::0x104D::0x1011::7A01020F12162064::RAW'
+filterwheel_timeout: 2000  # ms
+filterwheel_empty_pos: 1   # open / no filter
+longpass_pos: 3            # long-pass filter
+black_pos: 4               # beam block
+
+# ── Brightness calibration ────────────────────────────────────────────────────
+calib_target_brightness: 0.5     # target mean pixel value, normalised 0–1
+calib_tolerance: 0.02            # acceptable deviation from target
+calib_increment: 0.1             # multiplicative step size per iteration (±10%)
+calib_gain_step_db: 0.5          # gain step in dB per iteration
+calib_priority: 'exposure_time'  # exposure_time | gain
+calib_max_steps: 50
+calib_max_exposure_ms: 1000
+calib_initial_exposure_ms: 300
+calib_initial_gain: 0
+calib_num_frames_to_average: 1
+calib_num_frames_to_drop: 1
+calib_delay: 0.0                 # s — delay between captures
+calib_roi_fraction: 0.2         # null = full frame; e.g. 0.5 = central 50%×50% of pixels
+
+# ── Measurements ──────────────────────────────────────────────────────────────
+save_dir: '.'
+num_frames_to_average: 10
+num_frames_to_drop: 1
+capture_delay: 0.0               # s — delay between captures
+exposure_settings_path: 'amplitude\config\exposure_settings.json'
+exposure_settings_xpol_path: 'amplitude\config\exposure_settings_xpol.json'
+exposure_settings_ypol_path: 'amplitude\config\exposure_settings_ypol.json'
+focus_settings_path: 'amplitude\config\focus_settings.json'
+
+# ── Autofocus ─────────────────────────────────────────────────────────────────
+autofocus_enabled: false                        # set to true to enable per-range autofocus
+autofocus_range_boundaries: [440.0, 465.0]      # nm — boundaries between focus regimes
+autofocus_scan_half_range_mm: 0.02              # mm — ±scan radius around stored focus target
+autofocus_step_size_mm: 0.002                   # mm — step size during scan
+autofocus_velocity_mm_s: 0.1                    # mm/s — motor speed during scan
+autofocus_num_frames_to_drop: 3                 # frames to drop before each focus capture
