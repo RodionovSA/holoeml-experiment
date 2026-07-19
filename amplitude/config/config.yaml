@@ -17,7 +17,7 @@ camera_out_bit_depth: 'float32'  # output dtype after averaging
 
 # ── Focus motor ───────────────────────────────────────────────────────────────
 focus_serial: '27271402'
-default_focus_position: 17.2307  # mm (reference position at 550 nm)
+default_focus_position: 17.2645  # mm (reference position at 550 nm)
 default_focus_max_velocity: 0.2  # mm/s
 default_focus_acceleration: 0.2  # mm/s²
 focus_use_current_position: false               # true = per-wavelength offsets relative to current motor position at sweep start
