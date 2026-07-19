@@ -11,17 +11,15 @@ if __name__ == "__main__":
     #control.brightness_calibration(override=True, use_current_as_initial=True, xpol=False)
     
     # Run measurement
-    # start = time.time()
-    # control.sample_measurement(xpol=True)
-    # control.sample_measurement(xpol=False)
-    # end = time.time()
-    control.reference_measurement(xpol=True)
-    control.reference_measurement(xpol=False)
+    control.sample_measurement(xpol=False)
+    control.sample_measurement(xpol=True)
+    # control.reference_measurement(xpol=True)
+    # control.reference_measurement(xpol=False)
 
-    control.go_to_default_state()
+    # control.go_to_default_state()
     
-    control.black_measurement(xpol=True)
-    control.black_measurement(xpol=False)
+    # control.black_measurement(xpol=True)
+    # control.black_measurement(xpol=False)
     # Return to the default state
     control.go_to_default_state()
     
