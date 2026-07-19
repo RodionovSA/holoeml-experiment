@@ -8,14 +8,23 @@ starting point, focus velocity/acceleration) come from the YAML config.
 
 The focus motor is never moved on startup -- only its position is read.
 
+The live view is optimized for speed: the display frame is cheaply
+downsampled (strided slicing, not a full-resolution resize), only the image
+is repainted each tick (matplotlib blitting) instead of the whole figure, the
+focus/brightness metrics are computed on a background thread from a small
+central crop, and the motor position is cached instead of queried every
+frame.
+
 Usage
 -----
     python scripts/focus.py
-    python scripts/focus.py -c /path/to/config.yaml --zoom 0.75
+    python scripts/focus.py -c /path/to/config.yaml --display-width 1200
+    python scripts/focus.py --profile   # print live-view timing to stdout
 """
 
 import argparse
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -26,23 +35,41 @@ import amplitude
 from amplitude.config import Config
 from instruments.kinesismotor import KinesisMotor
 from instruments.pythorcam.thorcam import CameraStream, ThorlabsCamera, create_camera_sdk
-from instruments.pythorcam.utils import calculate_focus_measure, zoom
+from instruments.pythorcam.utils import calculate_focus_measure
 
 PKG_ROOT = Path(amplitude.__file__).resolve().parent  # .../holoeml-experiment/amplitude
+
+METRIC_CROP_SIZE = 512     # px, central region used for the focus/brightness readout
+METRIC_PERIOD_S = 0.1      # how often the background metric worker recomputes
+PROFILE_PERIOD_S = 2.0     # how often --profile prints a timing summary
 
 
 class FocusApp:
     """Live camera view + exposure/gain/focus-motor controls (matplotlib widgets)."""
 
     def __init__(self, camera: ThorlabsCamera, focus: KinesisMotor, config: Config,
-                 zoom_factor: float = 0.5):
+                 display_width: int = 1000, profile: bool = False):
         self.camera = camera
         self.focus = focus
         self.config = config
-        self.zoom_factor = zoom_factor
+        self.profile = profile
+
+        H, W = self.camera.image_shape
+        self.stride = max(1, W // max(display_width, 1))
 
         self.stream = CameraStream(camera)
         self._moving = False
+        self._position = self._safe_get_position()
+        self._focus_metric = 0.0
+        self._brightness = 0.0
+
+        self._bg = None            # cached blit background (set on first full draw)
+        self.timer = None
+        self._stop_metric = threading.Event()
+        self._metric_thread = None
+
+        if self.profile:
+            self._profile_reset()
 
         self._build_figure()
 
@@ -55,11 +82,16 @@ class FocusApp:
         self.ax_img.set_yticks([])
 
         H, W = self.camera.image_shape
-        blank = np.zeros((int(H * self.zoom_factor), int(W * self.zoom_factor)))
+        blank = np.zeros((H // self.stride, W // self.stride))
         self.img = self.ax_img.imshow(blank, cmap='gray', vmin=0,
-                                       vmax=self.camera.pixel_max_value)
+                                       vmax=self.camera.pixel_max_value,
+                                       animated=True)
 
-        self.status_text = self.fig.text(0.08, 0.34, "", fontsize=10, family='monospace')
+        self.overlay = self.ax_img.text(
+            0.02, 0.98, "", transform=self.ax_img.transAxes,
+            va='top', ha='left', fontsize=9, family='monospace', color='lime',
+            bbox=dict(facecolor='black', alpha=0.5, pad=4), animated=True,
+        )
 
         # Exposure slider
         ax_exp = self.fig.add_axes([0.2, 0.27, 0.6, 0.03])
@@ -81,7 +113,7 @@ class FocusApp:
         # move_to
         ax_moveto = self.fig.add_axes([0.2, 0.13, 0.35, 0.045])
         self.tb_moveto = TextBox(ax_moveto, 'move_to (mm)   ',
-                                  initial=f"{self._safe_get_position():.4f}")
+                                  initial=f"{self._position:.4f}")
         self.tb_moveto.on_submit(self._submit_move_to)
         ax_go = self.fig.add_axes([0.58, 0.13, 0.12, 0.045])
         self.btn_go = Button(ax_go, 'Go')
@@ -98,6 +130,18 @@ class FocusApp:
         self.btn_plus.on_clicked(lambda _event: self._submit_move_by(+1))
 
         self.fig.canvas.mpl_connect('close_event', self._on_close)
+        self.fig.canvas.mpl_connect('draw_event', self._on_draw)
+
+    # ── blitting ───────────────────────────────────────────────────────────
+
+    def _on_draw(self, _event) -> None:
+        """Cache the (widget-free) background after any full figure redraw.
+
+        Fires on the initial draw, on window resize, and whenever a slider /
+        text box triggers a full redraw -- so the cached background always
+        matches what's currently on screen.
+        """
+        self._bg = self.fig.canvas.copy_from_bbox(self.ax_img.bbox)
 
     # ── camera controls ───────────────────────────────────────────────────
 
@@ -142,32 +186,110 @@ class FocusApp:
     def _move_worker(self, move_fn, value: float) -> None:
         try:
             move_fn(value)
+            self._position = self._safe_get_position()
         except Exception as exc:
             print(f"[focus] motor move failed: {exc}")
         finally:
             self._moving = False
 
+    # ── background metric worker ────────────────────────────────────────────
+
+    def _central_crop(self, frame: np.ndarray) -> np.ndarray:
+        H, W = frame.shape[:2]
+        size = min(METRIC_CROP_SIZE, H, W)
+        cy, cx = H // 2, W // 2
+        half = size // 2
+        return frame[cy - half:cy + half, cx - half:cx + half]
+
+    def _metric_loop(self) -> None:
+        while not self._stop_metric.is_set():
+            frame = self.stream.get_latest_frame()
+            if frame is not None:
+                crop = self._central_crop(frame)
+                self._focus_metric = calculate_focus_measure(crop)
+                self._brightness = float(crop.mean())
+            self._stop_metric.wait(METRIC_PERIOD_S)
+
     # ── live view loop ─────────────────────────────────────────────────────
 
+    def _overlay_text(self) -> str:
+        position = "moving..." if self._moving else f"{self._position:.4f} mm"
+        return (f"position: {position}\n"
+                f"focus:    {self._focus_metric:8.2f}\n"
+                f"bright:   {self._brightness:8.1f}")
+
     def _on_tick(self) -> None:
+        t0 = time.perf_counter()
         frame = self.stream.get_latest_frame()
+        t1 = time.perf_counter()
+
         if frame is not None:
-            self.img.set_data(zoom(frame[:, :, 0], self.zoom_factor))
-            focus_metric = calculate_focus_measure(frame)
-            brightness = float(frame.mean())
-            position = "moving..." if self._moving else f"{self._safe_get_position():.4f} mm"
-            self.status_text.set_text(
-                f"position: {position}   focus: {focus_metric:8.2f}   brightness: {brightness:8.1f}"
-            )
-        self.fig.canvas.draw_idle()
+            disp = frame[::self.stride, ::self.stride, 0]
+            self.img.set_data(disp)
+            self.overlay.set_text(self._overlay_text())
+
+            canvas = self.fig.canvas
+            if self._bg is not None:
+                canvas.restore_region(self._bg)
+                self.ax_img.draw_artist(self.img)
+                self.ax_img.draw_artist(self.overlay)
+                canvas.blit(self.ax_img.bbox)
+                canvas.flush_events()
+            else:
+                # No cached background yet (first frame before the initial
+                # full draw has happened) -- fall back to a normal redraw.
+                canvas.draw_idle()
+
+        t2 = time.perf_counter()
+        if self.profile:
+            self._profile_record(frame is not None, t1 - t0, t2 - t1)
+
+    # ── profiling ────────────────────────────────────────────────────────
+
+    def _profile_reset(self) -> None:
+        self._profile_last_print = time.perf_counter()
+        self._profile_n_frames = 0
+        self._profile_fetch_ms = []
+        self._profile_draw_ms = []
+
+    def _profile_record(self, got_frame: bool, fetch_s: float, draw_s: float) -> None:
+        if got_frame:
+            self._profile_n_frames += 1
+            self._profile_fetch_ms.append(fetch_s * 1000)
+            self._profile_draw_ms.append(draw_s * 1000)
+
+        now = time.perf_counter()
+        elapsed = now - self._profile_last_print
+        if elapsed < PROFILE_PERIOD_S:
+            return
+
+        fps = self._profile_n_frames / elapsed
+        avg_fetch = sum(self._profile_fetch_ms) / len(self._profile_fetch_ms) if self._profile_fetch_ms else 0.0
+        avg_draw = sum(self._profile_draw_ms) / len(self._profile_draw_ms) if self._profile_draw_ms else 0.0
+        msg = (f"[focus][profile] display={fps:5.1f} fps   "
+               f"fetch={avg_fetch:5.2f} ms   draw={avg_draw:5.2f} ms   "
+               f"focus_metric={self._focus_metric:.1f}")
+        try:
+            camera_fps = self.camera._camera.get_measured_frame_rate_fps()
+            msg += f"   camera={camera_fps:.1f} fps"
+        except Exception:
+            pass
+        print(msg)
+        self._profile_reset()
 
     def _on_close(self, _event) -> None:
-        self.timer.stop()
+        if self.timer is not None:
+            self.timer.stop()
+        self._stop_metric.set()
         self.stream.stop()
 
     def run(self) -> None:
         self.stream.start()
-        self.timer = self.fig.canvas.new_timer(interval=50)
+
+        self._metric_thread = threading.Thread(target=self._metric_loop, daemon=True)
+        self._metric_thread.start()
+
+        self.timer = self.fig.canvas.new_timer(interval=33)  # ~30 fps target
         self.timer.add_callback(self._on_tick)
         self.timer.start()
         plt.show()
@@ -177,7 +299,10 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("-c", "--config", type=Path, default=PKG_ROOT / "config/config.yaml")
-    p.add_argument("--zoom", type=float, default=0.5, help="display downscale factor")
+    p.add_argument("--display-width", type=int, default=1000,
+                   help="live view display width in pixels (frame is downsampled to it)")
+    p.add_argument("--profile", action="store_true",
+                   help="print live-view timing (fps, fetch/draw ms) to stdout")
     args = p.parse_args()
 
     config = Config.from_yaml(str(args.config))
@@ -199,7 +324,8 @@ def main() -> None:
 
             camera.arm()
             try:
-                app = FocusApp(camera, focus, config, zoom_factor=args.zoom)
+                app = FocusApp(camera, focus, config,
+                                display_width=args.display_width, profile=args.profile)
                 app.run()
             finally:
                 camera.disarm()
