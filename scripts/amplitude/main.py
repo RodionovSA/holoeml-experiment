@@ -43,6 +43,7 @@ def main():
     
     config = Config.from_yaml(str(args.config))
     control = Control.from_config(config)
+    control.prepare_devices()
     xpols = [pol == "x" for pol in args.pol]
     
     if args.calibrate:
