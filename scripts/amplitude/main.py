@@ -44,6 +44,7 @@ def main():
     config = Config.from_yaml(str(args.config))
     control = Control.from_config(config)
     control.prepare_devices()
+    control.go_to_default_state()
     xpols = [pol == "x" for pol in args.pol]
     
     if args.calibrate:
@@ -59,7 +60,6 @@ def main():
             print(f"{name} xpol={xpol}")
             if not args.dry_run:
                 method(xpol=xpol)
-        control.go_to_default_state()
 
     control.go_to_default_state()
 
