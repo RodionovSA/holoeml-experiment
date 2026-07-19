@@ -20,7 +20,7 @@ focus_serial: '27271402'
 default_focus_position: 17.2345  # mm (reference position at 550 nm)
 default_focus_max_velocity: 0.2  # mm/s
 default_focus_acceleration: 0.2  # mm/s²
-focus_use_current_position: false               # true = per-wavelength offsets relative to current motor position at sweep start
+focus_use_current_position: true               # true = per-wavelength offsets relative to current motor position at sweep start
 
 # ── Polarizer motor ───────────────────────────────────────────────────────────
 polarizer_serial: '55001180'
