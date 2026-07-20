@@ -12,8 +12,13 @@ The live view is optimized for speed: the display frame is cheaply
 downsampled (strided slicing, not a full-resolution resize), only the image
 is repainted each tick (matplotlib blitting) instead of the whole figure, the
 focus/brightness metrics are computed on a background thread from a small
-central crop, and the motor position is cached instead of queried every
-frame.
+crop around the current view, and the motor position is cached instead of
+queried every frame.
+
+A Zoom slider digitally magnifies the live view in real time; clicking
+anywhere in the image recenters the zoom on that point (e.g. to inspect an
+off-center feature). The focus/brightness readout tracks whatever region is
+currently zoomed/centered on.
 
 Usage
 -----
@@ -54,14 +59,21 @@ class FocusApp:
         self.config = config
         self.profile = profile
 
-        H, W = self.camera.image_shape
-        self.stride = max(1, W // max(display_width, 1))
+        self.frame_h, self.frame_w = self.camera.image_shape
+        self.display_width = max(display_width, 1)
+        self.stride = max(1, self.frame_w // self.display_width)  # used for the initial blank image
 
         self.stream = CameraStream(camera)
         self._moving = False
         self._position = self._safe_get_position()
         self._focus_metric = 0.0
         self._brightness = 0.0
+
+        # Zoom / pan state (driven by the Zoom slider and clicks on the image).
+        self.zoom = 1.0
+        self.center_frac = (0.5, 0.5)     # zoom center, as a fraction of the full frame
+        self._crop = (0, 0, self.stride)  # (x0, y0, stride) of the crop shown last tick
+        self._last_disp_shape = None      # triggers one full redraw on the first frame
 
         self._bg = None            # cached blit background (set on first full draw)
         self.timer = None
@@ -77,15 +89,15 @@ class FocusApp:
 
     def _build_figure(self) -> None:
         self.fig = plt.figure("Focus", figsize=(7.5, 9))
-        self.ax_img = self.fig.add_axes([0.08, 0.40, 0.84, 0.56])
+        self.ax_img = self.fig.add_axes([0.08, 0.42, 0.84, 0.54])
         self.ax_img.set_xticks([])
         self.ax_img.set_yticks([])
 
-        H, W = self.camera.image_shape
-        blank = np.zeros((H // self.stride, W // self.stride))
+        blank = np.zeros((self.frame_h // self.stride, self.frame_w // self.stride))
         self.img = self.ax_img.imshow(blank, cmap='gray', vmin=0,
                                        vmax=self.camera.pixel_max_value,
-                                       animated=True)
+                                       interpolation='nearest', animated=True)
+        self._last_disp_shape = blank.shape
 
         self.overlay = self.ax_img.text(
             0.02, 0.98, "", transform=self.ax_img.transAxes,
@@ -94,7 +106,7 @@ class FocusApp:
         )
 
         # Exposure slider
-        ax_exp = self.fig.add_axes([0.2, 0.27, 0.6, 0.03])
+        ax_exp = self.fig.add_axes([0.2, 0.33, 0.6, 0.03])
         self.sl_exposure = Slider(
             ax_exp, 'Exposure (ms)',
             valmin=0.03, valmax=max(self.config.calib_max_exposure_ms, 1),
@@ -103,19 +115,24 @@ class FocusApp:
         self.sl_exposure.on_changed(self._on_exposure_changed)
 
         # Gain slider (SDK units are tenths of a dB)
-        ax_gain = self.fig.add_axes([0.2, 0.22, 0.6, 0.03])
+        ax_gain = self.fig.add_axes([0.2, 0.28, 0.6, 0.03])
         self.sl_gain = Slider(
             ax_gain, 'Gain (dB)',
             valmin=0, valmax=48, valinit=self.config.calib_initial_gain / 10,
         )
         self.sl_gain.on_changed(self._on_gain_changed)
 
+        # Zoom slider -- digitally magnifies the live view; click the image to recenter.
+        ax_zoom = self.fig.add_axes([0.2, 0.23, 0.6, 0.03])
+        self.sl_zoom = Slider(ax_zoom, 'Zoom (x)', valmin=1.0, valmax=16.0, valinit=self.zoom)
+        self.sl_zoom.on_changed(self._on_zoom_changed)
+
         # move_to
-        ax_moveto = self.fig.add_axes([0.2, 0.13, 0.35, 0.045])
+        ax_moveto = self.fig.add_axes([0.2, 0.14, 0.35, 0.045])
         self.tb_moveto = TextBox(ax_moveto, 'move_to (mm)   ',
                                   initial=f"{self._position:.4f}")
         self.tb_moveto.on_submit(self._submit_move_to)
-        ax_go = self.fig.add_axes([0.58, 0.13, 0.12, 0.045])
+        ax_go = self.fig.add_axes([0.58, 0.14, 0.12, 0.045])
         self.btn_go = Button(ax_go, 'Go')
         self.btn_go.on_clicked(lambda _event: self._submit_move_to(self.tb_moveto.text))
 
@@ -131,6 +148,7 @@ class FocusApp:
 
         self.fig.canvas.mpl_connect('close_event', self._on_close)
         self.fig.canvas.mpl_connect('draw_event', self._on_draw)
+        self.fig.canvas.mpl_connect('button_press_event', self._on_click)
 
     # ── blitting ───────────────────────────────────────────────────────────
 
@@ -150,6 +168,34 @@ class FocusApp:
 
     def _on_gain_changed(self, value_db: float) -> None:
         self.camera.set_gain(int(round(value_db * 10)))
+
+    # ── zoom / pan ───────────────────────────────────────────────────────
+
+    def _on_zoom_changed(self, value: float) -> None:
+        self.zoom = value
+
+    def _on_click(self, event) -> None:
+        """Recenter the zoom on wherever the user clicks inside the image."""
+        if event.inaxes is not self.ax_img or event.xdata is None or event.ydata is None:
+            return  # click landed on a slider/button/textbox, or outside any axes
+        x0, y0, stride = self._crop
+        full_x = x0 + event.xdata * stride
+        full_y = y0 + event.ydata * stride
+        cx = min(max(full_x / self.frame_w, 0.0), 1.0)
+        cy = min(max(full_y / self.frame_h, 0.0), 1.0)
+        self.center_frac = (cx, cy)
+
+    def _crop_bounds(self, crop_w: int, crop_h: int) -> tuple[int, int, int, int]:
+        """Center a ``crop_w x crop_h`` window on ``self.center_frac``, clamped to the frame."""
+        crop_w = min(crop_w, self.frame_w)
+        crop_h = min(crop_h, self.frame_h)
+        cx = self.center_frac[0] * self.frame_w
+        cy = self.center_frac[1] * self.frame_h
+        x0 = int(round(cx - crop_w / 2))
+        y0 = int(round(cy - crop_h / 2))
+        x0 = max(0, min(x0, self.frame_w - crop_w))
+        y0 = max(0, min(y0, self.frame_h - crop_h))
+        return x0, y0, crop_w, crop_h
 
     # ── focus motor controls ──────────────────────────────────────────────
 
@@ -194,18 +240,21 @@ class FocusApp:
 
     # ── background metric worker ────────────────────────────────────────────
 
-    def _central_crop(self, frame: np.ndarray) -> np.ndarray:
-        H, W = frame.shape[:2]
-        size = min(METRIC_CROP_SIZE, H, W)
-        cy, cx = H // 2, W // 2
-        half = size // 2
-        return frame[cy - half:cy + half, cx - half:cx + half]
+    def _metric_window(self, frame: np.ndarray) -> np.ndarray:
+        """Crop used for the focus/brightness readout: tracks the current zoom/pan,
+        capped at ``METRIC_CROP_SIZE`` so it stays cheap even at zoom=1x."""
+        view_w = max(1, int(self.frame_w / self.zoom))
+        view_h = max(1, int(self.frame_h / self.zoom))
+        size_w = min(METRIC_CROP_SIZE, view_w)
+        size_h = min(METRIC_CROP_SIZE, view_h)
+        x0, y0, size_w, size_h = self._crop_bounds(size_w, size_h)
+        return frame[y0:y0 + size_h, x0:x0 + size_w]
 
     def _metric_loop(self) -> None:
         while not self._stop_metric.is_set():
             frame = self.stream.get_latest_frame()
             if frame is not None:
-                crop = self._central_crop(frame)
+                crop = self._metric_window(frame)
                 self._focus_metric = calculate_focus_measure(crop)
                 self._brightness = float(crop.mean())
             self._stop_metric.wait(METRIC_PERIOD_S)
@@ -214,7 +263,7 @@ class FocusApp:
 
     def _overlay_text(self) -> str:
         position = "moving..." if self._moving else f"{self._position:.4f} mm"
-        return (f"position: {position}\n"
+        return (f"position: {position}   zoom: {self.zoom:4.1f}x\n"
                 f"focus:    {self._focus_metric:8.2f}\n"
                 f"bright:   {self._brightness:8.1f}")
 
@@ -224,12 +273,34 @@ class FocusApp:
         t1 = time.perf_counter()
 
         if frame is not None:
-            disp = frame[::self.stride, ::self.stride, 0]
+            crop_w = max(1, int(self.frame_w / self.zoom))
+            crop_h = max(1, int(self.frame_h / self.zoom))
+            x0, y0, crop_w, crop_h = self._crop_bounds(crop_w, crop_h)
+            stride = max(1, crop_w // self.display_width)
+            disp = frame[y0:y0 + crop_h:stride, x0:x0 + crop_w:stride, 0]
+            self._crop = (x0, y0, stride)
+
             self.img.set_data(disp)
             self.overlay.set_text(self._overlay_text())
 
             canvas = self.fig.canvas
-            if self._bg is not None:
+            if disp.shape != self._last_disp_shape:
+                # Zoom level changed -> the displayed array size changed. set_data()
+                # does NOT update imshow's own extent, so it must be updated
+                # explicitly (otherwise the new, differently-shaped array gets
+                # mapped onto the old data box, letterboxing the image) along
+                # with the axes view limits. Do a synchronous full draw so the
+                # blit background (cached via _on_draw / 'draw_event') is
+                # guaranteed correct before the next tick tries to blit against
+                # it -- avoids a stale-background glitch a deferred draw_idle()
+                # could leave for one frame.
+                extent = (-0.5, disp.shape[1] - 0.5, disp.shape[0] - 0.5, -0.5)
+                self.img.set_extent(extent)
+                self.ax_img.set_xlim(extent[0], extent[1])
+                self.ax_img.set_ylim(extent[2], extent[3])
+                self._last_disp_shape = disp.shape
+                canvas.draw()
+            elif self._bg is not None:
                 canvas.restore_region(self._bg)
                 self.ax_img.draw_artist(self.img)
                 self.ax_img.draw_artist(self.overlay)
