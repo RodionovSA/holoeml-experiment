@@ -14,7 +14,7 @@ This is the protocol for polarization-resolved hyperspectral measurements with t
 - Focus: Thorlabs brushed motor with a K-cube
 
 ## 1. Configuration file
-First, open `amplitude/config/config.yaml` and check the serial number for all devices, as well as the port and address for the monochromator and filter wheel.
+First, open `instruments/config/config.yaml` and check the serial number for all devices, as well as the port and address for the monochromator and filter wheel — this is the shared equipment config used by every protocol and script. Measurement-specific parameters (wavelength sweep, brightness calibration, measurement settings) live separately in `amplitude/config/config.yaml`.
 
 ## 2. Connection
 Connect the monochromator's Arduino board, filter wheel, camera, z-translation stage, and polarizer to your PC via USB. Run `sh ./amp_testconn.sh` to verify that everything is connected properly.
@@ -25,7 +25,7 @@ According to our analysis, the monochromator's lamp requires 2 hours of warm-up 
 ## 4. Brightness calibration
 By default, exposure settings files are located in `amplitude/config`, with separate files for x and y polarization. If any change to the setup could affect illumination, or if new illumination conditions are introduced, a new brightness calibration must be run for both x and y polarization.
 
-To do so, first check the brightness calibration section of `config.yaml`. The most important parameters are `calib_target_brightness`, `calib_priority`, and `calib_max_exposure_ms`.
+To do so, first check the brightness calibration section of `amplitude/config/config.yaml`. The most important parameters are `calib_target_brightness`, `calib_priority`, and `calib_max_exposure_ms`.
 
 1. Define the target brightness to be reached without a sample present. This is defined as `calib_target_brightness * 4096`. Through experimentation, we found that 0.5 is the optimal value.
 2. Define the optimization priority: exposure time or gain. Exposure time is the preferred mode.
@@ -37,9 +37,9 @@ After changing the config, it is recommended to reset the gain values in both ex
 It is highly recommended to record sample measurements first, since they require focusing and sample alignment, which take time. Once that is done, reference and black measurements can be run together. The same reference and black measurements can also be reused for multiple sample measurements, as long as the monochromator and camera have not been powered off in between.
 
 ## 6. Sample measurements
-Place your sample on the stage. Open the ThorCam app and `test_focus.ipynb`. Make sure the illumination wavelength is greater than 490 nm and that you can clearly see the field of view. Use the manual K-cube controllers to adjust focus and positioning so that your sample is within the camera's field of view and roughly in focus, then use the manual rotation stage to adjust the sample's rotational position.
+Place your sample on the stage, then run `sh ./focus_run.sh` to open the live focusing app (live camera view with exposure/gain sliders, focus-motor `move_to`/`move_by` controls, a sharpness readout, zoom, and an alignment crosshair). Make sure the illumination wavelength is greater than 490 nm and that you can clearly see the field of view. Use the manual K-cube controllers to adjust focus and positioning so that your sample is within the camera's field of view and roughly in focus, then use the manual rotation stage to adjust the sample's rotational position.
 
-In `test_focus.ipynb`, connect to the z-translation motor and use small movements to fine-tune the focus. Important: verify that the motor moves precisely and returns to the same position each time (manual K-cube control can interfere with Python control). Once everything is set, close the camera app, restart the Jupyter kernel, and run `sh ./amp_run.sh -m sample`.
+In the focusing app, use the `move_by` control with small steps to fine-tune the focus, watching the sharpness readout. Important: verify that the motor moves precisely and returns to the same position each time (manual K-cube control can interfere with Python control). Once everything is set, close the focusing app (this releases the camera and focus motor) and run `sh ./amp_run.sh -m sample`.
 
 ## 7. Reference and black measurements
 It is recommended to run reference and black measurements together. To do so, remove your sample and run `sh ./amp_run.sh -m reference black`.

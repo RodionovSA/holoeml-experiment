@@ -1,0 +1,36 @@
+# ── Shared equipment: serial numbers ──────────────────────────────────────────
+# Single source of truth for physical device identifiers. Every protocol
+# config (amplitude, phase) and standalone script should read these from
+# here instead of hardcoding them.
+camera_serial: '35596'
+focus_serial: '27271402'
+polarizer_serial: '55001180'
+piezo_serial: '92100065'
+powermeter_serial: '5003886'
+spectrometer_serial: 'SR600410'
+
+# ── Monochromator ─────────────────────────────────────────────────────────────
+monochromator_port: COM4                 # leave empty to be prompted at runtime
+monochromator_grating_mode: VIS Grating  # VIS Grating | IR Grating | Switch Mode
+
+# ── Camera ────────────────────────────────────────────────────────────────────
+camera_black_level: 0
+camera_bit_depth: 'uint16'       # raw frame dtype
+camera_out_bit_depth: 'float32'  # output dtype after averaging
+
+# ── Focus motor (shared kinematics; reference position is protocol-specific) ──
+default_focus_max_velocity: 0.2  # mm/s
+default_focus_acceleration: 0.2  # mm/s²
+
+# ── Polarizer motor ───────────────────────────────────────────────────────────
+polarizer_x_position: 175  # deg
+default_polarizer_home_velocity: 10  # deg/s
+default_polarizer_max_velocity: 10   # deg/s
+default_polarizer_acceleration: 15   # deg/s²
+
+# ── Filter wheel ──────────────────────────────────────────────────────────────
+filterwheel_address: 'USB0::0x104D::0x1011::7A01020F12162064::RAW'
+filterwheel_timeout: 2000  # ms
+filterwheel_empty_pos: 1   # open / no filter
+longpass_pos: 3            # long-pass filter
+black_pos: 4                # beam block

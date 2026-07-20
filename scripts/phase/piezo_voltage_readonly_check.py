@@ -24,9 +24,10 @@ Run from the repo root:
     python scripts/phase/piezo_voltage_readonly_check.py
 """
 
+from instruments.config import load_equipment
 from instruments.precisionpiezo import PrecisionPiezoCT1P
 
-PIEZO_SERIAL = "92100065"
+PIEZO_SERIAL = load_equipment().piezo_serial
 
 if __name__ == "__main__":
     with PrecisionPiezoCT1P(serial=PIEZO_SERIAL) as piezo:

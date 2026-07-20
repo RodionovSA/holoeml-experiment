@@ -1,12 +1,13 @@
 from datetime import datetime
 from pathlib import Path
 
+from instruments.config import load_equipment
 from instruments.pythorcam.thorcam import ThorlabsCamera, create_camera_sdk
 import time
 import contextlib
 import numpy as np
 
-SERIAL = "35596"
+SERIAL = load_equipment().camera_serial
 BLACK_LEVEL = 0
 GAIN_RANGE = [0, 100, 200]
 EXPOSURES_US = np.geomspace(28, 1_000_000, 8).round().astype(int)  # 8 pts, 28us -> 1s

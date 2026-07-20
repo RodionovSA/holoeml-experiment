@@ -4,21 +4,24 @@ from pathlib import Path
 
 import numpy as np
 
+from instruments.config import load_equipment
 from instruments.spectrometer import Spectrometer
 from instruments.spectrometer.utils import autoexposure
 from instruments.monochromator.mono import MonochromatorControl
 
 
 if __name__ == "__main__":
+    _eq = load_equipment()
+
     # Run monochromator
-    mono = MonochromatorControl(port='COM4')
+    mono = MonochromatorControl(port=_eq.monochromator_port)
     mono.initialize_arduino()
     mono.home_motor()
-    mono.select_grating_mode(mode="VIS Grating")
+    mono.select_grating_mode(mode=_eq.monochromator_grating_mode)
     mono.goto_lamp_baseline()
 
     # Run spectrometer
-    sp = Spectrometer(serial="SR600410")
+    sp = Spectrometer(serial=_eq.spectrometer_serial)
     sp.set_scans_to_average(n=1)
     # autoexposure(sp, target=0.6)
     sp.set_integration_time(10230)

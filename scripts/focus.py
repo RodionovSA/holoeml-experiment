@@ -3,8 +3,10 @@
 Shows a live camera view with controls for exposure, gain, and the focus
 motor (absolute ``move_to`` / relative ``move_by``), plus a live sharpness
 readout (Laplacian variance) to help judge focus by eye. Run this before a
-measurement to focus the sample; all defaults (serials, exposure/gain
-starting point, focus velocity/acceleration) come from the YAML config.
+measurement to focus the sample; serials and shared hardware settings (focus
+velocity/acceleration, camera bit depth, etc.) come from the shared
+``instruments/config`` equipment store, while the exposure/gain starting
+point for this app is defined by the constants at the top of this file.
 
 The focus motor is never moved on startup -- only its position is read.
 
@@ -28,7 +30,7 @@ axes-fraction space, so it stays correctly placed at any zoom/pan level.
 Usage
 -----
     python scripts/focus.py
-    python scripts/focus.py -c /path/to/config.yaml --display-width 1200
+    python scripts/focus.py -c /path/to/equipment_config.yaml --display-width 1200
     python scripts/focus.py --profile   # print live-view timing to stdout
 """
 
@@ -41,27 +43,28 @@ import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.widgets import Button, Slider, TextBox
 
-import amplitude
-from amplitude.config import Config
+from instruments.config import load_equipment
 from instruments.kinesismotor import KinesisMotor
 from instruments.pythorcam.thorcam import CameraStream, ThorlabsCamera, create_camera_sdk
 from instruments.pythorcam.utils import calculate_focus_measure
-
-PKG_ROOT = Path(amplitude.__file__).resolve().parent  # .../holoeml-experiment/amplitude
 
 METRIC_CROP_SIZE = 512     # px, central region used for the focus/brightness readout
 METRIC_PERIOD_S = 0.1      # how often the background metric worker recomputes
 PROFILE_PERIOD_S = 2.0     # how often --profile prints a timing summary
 
+# ── Focus app defaults ──────────────────────────────────────────────────────
+INITIAL_EXPOSURE_MS = 300    # live-view starting exposure
+MAX_EXPOSURE_MS = 1000       # upper bound of the exposure slider
+INITIAL_GAIN = 50             # starting gain (SDK units = tenths of a dB)
+
 
 class FocusApp:
     """Live camera view + exposure/gain/focus-motor controls (matplotlib widgets)."""
 
-    def __init__(self, camera: ThorlabsCamera, focus: KinesisMotor, config: Config,
+    def __init__(self, camera: ThorlabsCamera, focus: KinesisMotor,
                  display_width: int = 1000, profile: bool = False):
         self.camera = camera
         self.focus = focus
-        self.config = config
         self.profile = profile
 
         self.frame_h, self.frame_w = self.camera.image_shape
@@ -124,8 +127,8 @@ class FocusApp:
         ax_exp = self.fig.add_axes([0.2, 0.37, 0.6, 0.03])
         self.sl_exposure = Slider(
             ax_exp, 'Exposure (ms)',
-            valmin=0.03, valmax=max(self.config.calib_max_exposure_ms, 1),
-            valinit=self.config.calib_initial_exposure_ms,
+            valmin=0.03, valmax=max(MAX_EXPOSURE_MS, 1),
+            valinit=INITIAL_EXPOSURE_MS,
         )
         self.sl_exposure.on_changed(self._on_exposure_changed)
 
@@ -133,7 +136,7 @@ class FocusApp:
         ax_gain = self.fig.add_axes([0.2, 0.32, 0.6, 0.03])
         self.sl_gain = Slider(
             ax_gain, 'Gain (dB)',
-            valmin=0, valmax=48, valinit=self.config.calib_initial_gain / 10,
+            valmin=0, valmax=48, valinit=INITIAL_GAIN / 10,
         )
         self.sl_gain.on_changed(self._on_gain_changed)
 
@@ -401,33 +404,35 @@ class FocusApp:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("-c", "--config", type=Path, default=PKG_ROOT / "config/config.yaml")
+    p.add_argument("-c", "--config", type=Path, default=None,
+                   help="path to the equipment config YAML "
+                        "(defaults to instruments/config/config.yaml)")
     p.add_argument("--display-width", type=int, default=1000,
                    help="live view display width in pixels (frame is downsampled to it)")
     p.add_argument("--profile", action="store_true",
                    help="print live-view timing (fps, fetch/draw ms) to stdout")
     args = p.parse_args()
 
-    config = Config.from_yaml(str(args.config))
+    eq = load_equipment(args.config)
 
     sdk = create_camera_sdk()
     try:
-        with ThorlabsCamera(sdk, config.camera_serial) as camera, \
-             KinesisMotor(config.focus_serial, motor_type='stage') as focus:
+        with ThorlabsCamera(sdk, eq.camera_serial) as camera, \
+             KinesisMotor(eq.focus_serial, motor_type='stage') as focus:
             camera.set_settings(
-                exposure_time_us=config.calib_initial_exposure_ms * 1000,
-                gain=config.calib_initial_gain,
-                black_level=config.camera_black_level,
-                bit_depth=getattr(np, config.camera_bit_depth),
-                out_bit_depth=getattr(np, config.camera_out_bit_depth),
+                exposure_time_us=INITIAL_EXPOSURE_MS * 1000,
+                gain=INITIAL_GAIN,
+                black_level=eq.camera_black_level,
+                bit_depth=getattr(np, eq.camera_bit_depth),
+                out_bit_depth=getattr(np, eq.camera_out_bit_depth),
             )
-            if config.default_focus_max_velocity or config.default_focus_acceleration:
-                focus.set_velocity(max_velocity=config.default_focus_max_velocity,
-                                    acceleration=config.default_focus_acceleration)
+            if eq.default_focus_max_velocity or eq.default_focus_acceleration:
+                focus.set_velocity(max_velocity=eq.default_focus_max_velocity,
+                                    acceleration=eq.default_focus_acceleration)
 
             camera.arm()
             try:
-                app = FocusApp(camera, focus, config,
+                app = FocusApp(camera, focus,
                                 display_width=args.display_width, profile=args.profile)
                 app.run()
             finally:

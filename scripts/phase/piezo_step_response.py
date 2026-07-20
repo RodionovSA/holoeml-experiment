@@ -35,14 +35,16 @@ from pathlib import Path
 
 import numpy as np
 
+from instruments.config import load_equipment
 from instruments.precisionpiezo import PrecisionPiezoCT1P
 from instruments.pythorcam.thorcam import ThorlabsCamera, create_camera_sdk
 
 # --------------------------------------------------------------------------- #
 # Settings -- edit before running                                             #
 # --------------------------------------------------------------------------- #
-CAMERA_SERIAL = "35596"
-PIEZO_SERIAL = "92100065"
+_EQ = load_equipment()
+CAMERA_SERIAL = _EQ.camera_serial
+PIEZO_SERIAL = _EQ.piezo_serial
 
 EXPOSURE_US = 300000  # 300 ms
 GAIN = 0

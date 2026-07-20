@@ -27,9 +27,10 @@ from pathlib import Path
 
 import numpy as np
 
+from instruments.config import load_equipment
 from instruments.precisionpiezo import PrecisionPiezoCT1P
 
-PIEZO_SERIAL = "92100065"
+PIEZO_SERIAL = load_equipment().piezo_serial
 
 # Local sweep parameters: step outward from the current voltage by
 # VOLT_STEP_V, up to N_STEPS_EACH_SIDE steps in each direction. Kept fine

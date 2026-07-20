@@ -289,7 +289,9 @@ class CameraStream:
 
 #Test
 if __name__=="__main__":
-    serial_number = '35595'
+    # Keep in sync with instruments/config/config.yaml's camera_serial by hand
+    # (this demo block predates instruments/config and isn't wired to it).
+    serial_number = '35596'
     camerasdk = create_camera_sdk()
     with ThorlabsCamera(camerasdk, serial_number) as camera:
         camera.set_settings(exposure_time_us=10000, gain=0, black_level=5, bit_depth=np.uint16)

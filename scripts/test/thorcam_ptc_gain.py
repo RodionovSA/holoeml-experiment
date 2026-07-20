@@ -18,14 +18,16 @@ fixed band before running (this script does not drive the monochromator).
 from datetime import datetime
 from pathlib import Path
 
+from instruments.config import load_equipment
 from instruments.pythorcam.thorcam import ThorlabsCamera, create_camera_sdk
 from instruments.powermeter import PM400
 import time
 import contextlib
 import numpy as np
 
-SERIAL = "35596"
-PM_SERIAL = "5003886"
+_EQ = load_equipment()
+SERIAL = _EQ.camera_serial
+PM_SERIAL = _EQ.powermeter_serial
 PM_WAVELENGTH_NM = 550.0   # set on PM400 to match the illumination band
 BLACK_LEVEL = 0
 GAIN_RANGE = [0, 100, 200]

@@ -1,6 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 
+from instruments.config import load_equipment
 from instruments.pythorcam.thorcam import ThorlabsCamera, create_camera_sdk
 from instruments.pythorcam.utils import autoexposure
 from instruments.filterwheel import FilterWheelControl
@@ -8,8 +9,8 @@ import time
 import contextlib
 import numpy as np
 
-
-SERIAL = "35596"
+_EQ = load_equipment()
+SERIAL = _EQ.camera_serial
 BLACK_LEVEL = 0
 GAIN_RANGE = [0]
 ROI_FRACTION = 0.10        # central 20% x 20% sub-ROI (avoid vignetted edges)
@@ -27,7 +28,7 @@ AE_TOLERANCE_FLOOR_DN = 1.0    # absolute floor so near-zero targets don't chase
 AE_INCREMENT = 0.1             # multiplicative exposure step per autoexposure iteration
 AE_MAX_STEPS = 50
 
-FILTERWHEEL_ADDRESS = 'USB0::0x104D::0x1011::7A01020F12162064::RAW'
+FILTERWHEEL_ADDRESS = _EQ.filterwheel_address
 FILTERWHEEL_OPEN = 1
 FILTERWHEEL_CLOSED = 4
 

@@ -40,9 +40,10 @@ from pathlib import Path
 
 import numpy as np
 
+from instruments.config import load_equipment
 from instruments.precisionpiezo import PrecisionPiezoCT1P
 
-PIEZO_SERIAL = "92100065"
+PIEZO_SERIAL = load_equipment().piezo_serial
 
 POLL_DURATION_S = 20.0
 POLL_INTERVAL_S = 0.05

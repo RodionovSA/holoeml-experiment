@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 import yaml
+
+from instruments.config import load_equipment
 
 
 @dataclass
@@ -106,6 +108,10 @@ class Config:
     focus_use_current_position: bool = False
     """When ``True``, use the motor's position at sweep start as the focus baseline instead of ``default_focus_position``.  All per-wavelength offsets are applied relative to that position."""
 
+    # ── Piezo (phase protocol) ───────────────────────────────────────────────
+    piezo_serial: str = ""
+    """Serial number string of the CT1P (IntegratedPrecisionPiezo) controller."""
+
     # ── Polarizer motor ───────────────────────────────────────────────────────
     polarizer_serial: str = ""
     """Serial number string of the Thorlabs Kinesis polarizer rotation stage."""
@@ -204,15 +210,28 @@ class Config:
             yaml.safe_dump(asdict(self), f, sort_keys=False)
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> Config:
+    def from_yaml(cls, path: str | Path, equipment_path: str | Path | None = None) -> Config:
         """Load a configuration from a YAML file produced by :meth:`to_yaml`.
 
+        Shared equipment settings (device serials, filter wheel timeout/positions,
+        polarizer position/velocities, focus velocities, camera bit depth, etc.)
+        are loaded from the shared :mod:`instruments.config` store and merged
+        underneath ``path``, so ``path`` only needs to specify protocol-specific
+        parameters and may override any equipment value if needed.
+
         Args:
-            path: Path to the YAML file.
+            path: Path to the protocol YAML file.
+            equipment_path: Path to the shared equipment YAML file. Defaults to
+                ``instruments/config/config.yaml`` (see
+                :func:`instruments.config.load_equipment`).
 
         Returns:
             A fully populated :class:`Config` instance.
         """
         with open(path, encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-        return cls(**data)
+            data = yaml.safe_load(f) or {}
+        equipment = asdict(load_equipment(equipment_path))
+        merged = {**equipment, **data}
+        valid_fields = {f.name for f in fields(cls)}
+        merged = {k: v for k, v in merged.items() if k in valid_fields}
+        return cls(**merged)

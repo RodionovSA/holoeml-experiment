@@ -1,3 +1,8 @@
+# Shared equipment settings (device serials, filter wheel, polarizer, focus
+# velocities, camera bit depth, monochromator port, etc.) live in
+# equipment/equipment.yaml and are merged in automatically by Config.from_yaml.
+# Only protocol-specific parameters belong in this file.
+
 # ── Wavelength sweep ──────────────────────────────────────────────────────────
 wvl_start: 400.0            # nm
 wvl_stop: 1000.0            # nm
@@ -5,36 +10,9 @@ wvl_num: 121                # number of steps (linspace)
 filter_wvl: 600.0           # nm — long-pass filter inserted above this wavelength
 default_wavelength: 550.0   # nm — resting wavelength between operations
 
-# ── Monochromator ─────────────────────────────────────────────────────────────
-monochromator_port: COM4                    # leave empty to be prompted at runtime
-monochromator_grating_mode: VIS Grating    # VIS Grating | IR Grating | Switch Mode
-
-# ── Camera ────────────────────────────────────────────────────────────────────
-camera_serial: '35596'
-camera_black_level: 0
-camera_bit_depth: 'uint16'       # raw frame dtype
-camera_out_bit_depth: 'float32'  # output dtype after averaging
-
-# ── Focus motor ───────────────────────────────────────────────────────────────
-focus_serial: '27271402'
+# ── Focus motor (reference position is protocol-specific; kinematics are shared) ─
 default_focus_position: 17.2345  # mm (reference position at 550 nm)
-default_focus_max_velocity: 0.2  # mm/s
-default_focus_acceleration: 0.2  # mm/s²
 focus_use_current_position: true               # true = per-wavelength offsets relative to current motor position at sweep start
-
-# ── Polarizer motor ───────────────────────────────────────────────────────────
-polarizer_serial: '55001180'
-polarizer_x_position: 175 # deg
-default_polarizer_home_velocity: 10  # deg/s
-default_polarizer_max_velocity: 10  # deg/s
-default_polarizer_acceleration: 15  # deg/s²
-
-# ── Filter wheel ──────────────────────────────────────────────────────────────
-filterwheel_address: 'USB0::0x104D::0x1011::7A01020F12162064::RAW'
-filterwheel_timeout: 2000  # ms
-filterwheel_empty_pos: 1   # open / no filter
-longpass_pos: 3            # long-pass filter
-black_pos: 4               # beam block
 
 # ── Brightness calibration ────────────────────────────────────────────────────
 calib_target_brightness: 0.5     # target mean pixel value, normalised 0–1
