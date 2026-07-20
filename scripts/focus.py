@@ -20,6 +20,11 @@ anywhere in the image recenters the zoom on that point (e.g. to inspect an
 off-center feature). The focus/brightness readout tracks whatever region is
 currently zoomed/centered on.
 
+A red dashed crosshair (independent H-line / V-line position sliders) helps
+align the angle of a structure -- e.g. rotate the sample until an edge is
+parallel to the horizontal line. The crosshair position is defined in
+axes-fraction space, so it stays correctly placed at any zoom/pan level.
+
 Usage
 -----
     python scripts/focus.py
@@ -99,6 +104,16 @@ class FocusApp:
                                        interpolation='nearest', animated=True)
         self._last_disp_shape = blank.shape
 
+        # Crosshair -- drawn in AXES-FRACTION coordinates (transAxes), not data
+        # coordinates, so it stays correctly positioned at any zoom/pan level
+        # with no need to route it through _crop_bounds like the image is.
+        self.hline = self.ax_img.plot([0, 1], [0.5, 0.5], transform=self.ax_img.transAxes,
+                                       color='red', lw=1, ls='--', alpha=0.8,
+                                       animated=True)[0]
+        self.vline = self.ax_img.plot([0.5, 0.5], [0, 1], transform=self.ax_img.transAxes,
+                                       color='red', lw=1, ls='--', alpha=0.8,
+                                       animated=True)[0]
+
         self.overlay = self.ax_img.text(
             0.02, 0.98, "", transform=self.ax_img.transAxes,
             va='top', ha='left', fontsize=9, family='monospace', color='lime',
@@ -106,7 +121,7 @@ class FocusApp:
         )
 
         # Exposure slider
-        ax_exp = self.fig.add_axes([0.2, 0.33, 0.6, 0.03])
+        ax_exp = self.fig.add_axes([0.2, 0.37, 0.6, 0.03])
         self.sl_exposure = Slider(
             ax_exp, 'Exposure (ms)',
             valmin=0.03, valmax=max(self.config.calib_max_exposure_ms, 1),
@@ -115,7 +130,7 @@ class FocusApp:
         self.sl_exposure.on_changed(self._on_exposure_changed)
 
         # Gain slider (SDK units are tenths of a dB)
-        ax_gain = self.fig.add_axes([0.2, 0.28, 0.6, 0.03])
+        ax_gain = self.fig.add_axes([0.2, 0.32, 0.6, 0.03])
         self.sl_gain = Slider(
             ax_gain, 'Gain (dB)',
             valmin=0, valmax=48, valinit=self.config.calib_initial_gain / 10,
@@ -123,26 +138,35 @@ class FocusApp:
         self.sl_gain.on_changed(self._on_gain_changed)
 
         # Zoom slider -- digitally magnifies the live view; click the image to recenter.
-        ax_zoom = self.fig.add_axes([0.2, 0.23, 0.6, 0.03])
+        ax_zoom = self.fig.add_axes([0.2, 0.27, 0.6, 0.03])
         self.sl_zoom = Slider(ax_zoom, 'Zoom (x)', valmin=1.0, valmax=16.0, valinit=self.zoom)
         self.sl_zoom.on_changed(self._on_zoom_changed)
 
+        # Crosshair position sliders (0-100% of the current view, independent of zoom)
+        ax_hline = self.fig.add_axes([0.2, 0.22, 0.6, 0.03])
+        self.sl_hline = Slider(ax_hline, 'H-line pos (%)', valmin=0, valmax=100, valinit=50)
+        self.sl_hline.on_changed(self._on_hline_changed)
+
+        ax_vline = self.fig.add_axes([0.2, 0.17, 0.6, 0.03])
+        self.sl_vline = Slider(ax_vline, 'V-line pos (%)', valmin=0, valmax=100, valinit=50)
+        self.sl_vline.on_changed(self._on_vline_changed)
+
         # move_to
-        ax_moveto = self.fig.add_axes([0.2, 0.14, 0.35, 0.045])
+        ax_moveto = self.fig.add_axes([0.2, 0.10, 0.35, 0.045])
         self.tb_moveto = TextBox(ax_moveto, 'move_to (mm)   ',
                                   initial=f"{self._position:.4f}")
         self.tb_moveto.on_submit(self._submit_move_to)
-        ax_go = self.fig.add_axes([0.58, 0.14, 0.12, 0.045])
+        ax_go = self.fig.add_axes([0.58, 0.10, 0.12, 0.045])
         self.btn_go = Button(ax_go, 'Go')
         self.btn_go.on_clicked(lambda _event: self._submit_move_to(self.tb_moveto.text))
 
         # move_by
-        ax_step = self.fig.add_axes([0.2, 0.06, 0.35, 0.045])
+        ax_step = self.fig.add_axes([0.2, 0.03, 0.35, 0.045])
         self.tb_step = TextBox(ax_step, 'move_by step (mm)', initial='0.001')
-        ax_minus = self.fig.add_axes([0.58, 0.06, 0.12, 0.045])
+        ax_minus = self.fig.add_axes([0.58, 0.03, 0.12, 0.045])
         self.btn_minus = Button(ax_minus, '-')
         self.btn_minus.on_clicked(lambda _event: self._submit_move_by(-1))
-        ax_plus = self.fig.add_axes([0.72, 0.06, 0.12, 0.045])
+        ax_plus = self.fig.add_axes([0.72, 0.03, 0.12, 0.045])
         self.btn_plus = Button(ax_plus, '+')
         self.btn_plus.on_clicked(lambda _event: self._submit_move_by(+1))
 
@@ -173,6 +197,12 @@ class FocusApp:
 
     def _on_zoom_changed(self, value: float) -> None:
         self.zoom = value
+
+    def _on_hline_changed(self, value: float) -> None:
+        self.hline.set_ydata([value / 100, value / 100])
+
+    def _on_vline_changed(self, value: float) -> None:
+        self.vline.set_xdata([value / 100, value / 100])
 
     def _on_click(self, event) -> None:
         """Recenter the zoom on wherever the user clicks inside the image."""
@@ -303,6 +333,8 @@ class FocusApp:
             elif self._bg is not None:
                 canvas.restore_region(self._bg)
                 self.ax_img.draw_artist(self.img)
+                self.ax_img.draw_artist(self.hline)
+                self.ax_img.draw_artist(self.vline)
                 self.ax_img.draw_artist(self.overlay)
                 canvas.blit(self.ax_img.bbox)
                 canvas.flush_events()
