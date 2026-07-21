@@ -18,9 +18,9 @@ EXPOSURE_US = 300000  # 300 ms
 GAIN = 0
 BLACK_LEVEL = 0
 
-NUM_STEPS = 20
-STEP = 0.1 # Volts
-FRAMES_TO_AVERAGE = 1
+NUM_STEPS = 40
+STEP = 0.05 # Volts
+FRAMES_TO_AVERAGE = 10
 
 @contextlib.contextmanager
 def _armed_camera(camera):
