@@ -20,7 +20,7 @@ class EquipmentConfig:
 
     # ── Serials / addresses ─────────────────────────────────────────────────
     camera_serial: str = ""
-    """Serial number string of the Thorlabs camera."""
+    """Serial number string of the camera."""
     focus_serial: str = ""
     """Serial number string of the Thorlabs Kinesis focus motor."""
     polarizer_serial: str = ""
@@ -41,6 +41,8 @@ class EquipmentConfig:
     """Active grating mode: ``'VIS Grating'``, ``'IR Grating'``, or ``'Switch Mode'``."""
 
     # ── Camera ────────────────────────────────────────────────────────────────
+    camera_vendor: str = "thorlabs"
+    """Camera SDK to use: ``'thorlabs'`` or ``'pco'``. See ``instruments.camera.open_camera``."""
     camera_black_level: int = 0
     """Camera black level offset."""
     camera_bit_depth: str = "uint16"

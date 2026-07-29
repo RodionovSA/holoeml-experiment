@@ -35,9 +35,9 @@ from pathlib import Path
 
 import numpy as np
 
+from instruments.camera import Camera, open_camera
 from instruments.config import load_equipment
 from instruments.precisionpiezo import PrecisionPiezoCT1P
-from instruments.pythorcam.thorcam import ThorlabsCamera, create_camera_sdk
 
 # --------------------------------------------------------------------------- #
 # Settings -- edit before running                                             #
@@ -69,7 +69,7 @@ STABLE_TIMEOUT_S = 5.0
 
 
 @contextlib.contextmanager
-def _armed_camera(camera: ThorlabsCamera):
+def _armed_camera(camera: Camera):
     camera.arm()
     time.sleep(0.1)
     try:
@@ -138,9 +138,10 @@ if __name__ == "__main__":
     print(f"Using calibration {calibration_path.name}: "
           f"position_um = {slope:.4f} * volts + {intercept:.4f}")
 
-    camerasdk = create_camera_sdk()
-    with ThorlabsCamera(camerasdk, CAMERA_SERIAL) as camera, \
-            PrecisionPiezoCT1P(serial=PIEZO_SERIAL) as piezo:
+    with contextlib.ExitStack() as stack:
+        camera = open_camera(_EQ, stack)
+        stack.enter_context(camera)
+        piezo = stack.enter_context(PrecisionPiezoCT1P(serial=PIEZO_SERIAL))
 
         camera.set_settings(
             exposure_time_us=EXPOSURE_US,
@@ -151,7 +152,7 @@ if __name__ == "__main__":
         )
 
         H, W = camera.image_shape
-        C = 1 if camera.cam_type == 'MU' else 3
+        C = camera.num_channels
 
         piezo.set_open_loop()
         time.sleep(0.2)
@@ -298,6 +299,7 @@ if __name__ == "__main__":
         gain=GAIN,
         black_level=BLACK_LEVEL,
         camera_serial=CAMERA_SERIAL,
+        camera_vendor=_EQ.camera_vendor,
         piezo_serial=PIEZO_SERIAL,
         max_travel_um=piezo.max_travel_um,
         min_voltage=min_volts,

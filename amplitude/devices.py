@@ -21,10 +21,10 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from instruments.camera import Camera, open_camera
 from instruments.filterwheel import FilterWheelControl
 from instruments.kinesismotor import KinesisMotor
 from instruments.monochromator.mono import MonochromatorControl
-from instruments.pythorcam.thorcam import ThorlabsCamera, create_camera_sdk
 
 from amplitude.config import Config
 
@@ -33,7 +33,7 @@ from amplitude.config import Config
 class Instruments:
     """Bundle of connected hardware devices, plus their combined lifecycle."""
 
-    camera: ThorlabsCamera
+    camera: Camera
     mono: MonochromatorControl
     focus: KinesisMotor
     polarizer: KinesisMotor
@@ -51,17 +51,15 @@ class Instruments:
         """
         stack = contextlib.ExitStack()
         try:
-            sdk = create_camera_sdk()
-            stack.callback(sdk.dispose)
-
-            camera = stack.enter_context(ThorlabsCamera(sdk, config.camera_serial))
-            camera.set_settings(
-                exposure_time_us=config.calib_initial_exposure_ms * 1000,
-                gain=config.calib_initial_gain,
-                black_level=config.camera_black_level,
-                bit_depth=getattr(np, config.camera_bit_depth),
-                out_bit_depth=getattr(np, config.camera_out_bit_depth),
-            )
+            camera = open_camera(config, stack)
+            stack.enter_context(camera)
+            camera.set_exposure_ms(config.calib_initial_exposure_ms)
+            if camera.supports_gain:
+                camera.set_gain(config.calib_initial_gain)
+            if camera.supports_black_level:
+                camera.set_black_level(config.camera_black_level)
+            camera.set_raw_bit_depth(getattr(np, config.camera_bit_depth))
+            camera.set_out_bit_depth(getattr(np, config.camera_out_bit_depth))
 
             mono = stack.enter_context(MonochromatorControl(port=config.monochromator_port))
             filterwheel = stack.enter_context(FilterWheelControl(config.filterwheel_address))

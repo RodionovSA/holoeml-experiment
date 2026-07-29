@@ -6,21 +6,21 @@ from typing import Tuple
 
 import numpy as np
 
+from instruments.camera import Camera, open_camera
 from instruments.config import load_equipment
 from instruments.precisionpiezo import PrecisionPiezoCT1P
-from instruments.pythorcam.thorcam import ThorlabsCamera, create_camera_sdk
 
 _EQ = load_equipment()
 CAMERA_SERIAL = _EQ.camera_serial
 PIEZO_SERIAL = _EQ.piezo_serial
 
-EXPOSURE_US = 300000  # 300 ms
+EXPOSURE_US = 50000  # 50 ms
 GAIN = 0
 BLACK_LEVEL = 0
 
-NUM_STEPS = 40
-STEP = 0.05 # Volts
-FRAMES_TO_AVERAGE = 10
+NUM_STEPS = 30
+STEP = 0.1 # Volts
+FRAMES_TO_AVERAGE = 1
 
 @contextlib.contextmanager
 def _armed_camera(camera):
@@ -31,7 +31,7 @@ def _armed_camera(camera):
     finally:
         camera.disarm()
 
-def piezo_scan(camera: ThorlabsCamera,
+def piezo_scan(camera: Camera,
                piezo: PrecisionPiezoCT1P,
                num_steps: int = 10,
                step: float = 0.1,
@@ -54,21 +54,20 @@ def piezo_scan(camera: ThorlabsCamera,
     return np.asarray(images), np.asarray(vol), np.asarray(pos)
 
 if __name__ == "__main__":
-    camera_sdk = create_camera_sdk()
-    try:
-        with ThorlabsCamera(camera_sdk, CAMERA_SERIAL) as camera, \
-             PrecisionPiezoCT1P(PIEZO_SERIAL) as piezo:
-            camera.set_settings(EXPOSURE_US, GAIN, BLACK_LEVEL)
+    with contextlib.ExitStack() as stack:
+        camera = open_camera(_EQ, stack)
+        stack.enter_context(camera)
+        piezo = stack.enter_context(PrecisionPiezoCT1P(PIEZO_SERIAL))
 
-            piezo.set_open_loop()
-            init_vol = piezo.get_voltage()
-            print(f"Piezo init voltage: {init_vol} V, position: {piezo.get_position()} um")
-            images, vol, pos = piezo_scan(camera, piezo, NUM_STEPS, STEP, FRAMES_TO_AVERAGE)
-            print(f"Piezo final voltage: {piezo.get_voltage()} V, position: {piezo.get_position()} um")
-            piezo.set_voltage(init_vol)
-            print(f"Piezo returnal voltage: {piezo.get_voltage()} V, position: {piezo.get_position()} um")
-    finally:
-        camera_sdk.dispose()
+        camera.set_settings(EXPOSURE_US, GAIN, BLACK_LEVEL)
+
+        piezo.set_open_loop()
+        init_vol = piezo.get_voltage()
+        print(f"Piezo init voltage: {init_vol} V, position: {piezo.get_position()} um")
+        images, vol, pos = piezo_scan(camera, piezo, NUM_STEPS, STEP, FRAMES_TO_AVERAGE)
+        print(f"Piezo final voltage: {piezo.get_voltage()} V, position: {piezo.get_position()} um")
+        piezo.set_voltage(init_vol)
+        print(f"Piezo returnal voltage: {piezo.get_voltage()} V, position: {piezo.get_position()} um")
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     save_path = Path(__file__).resolve().parent / f"piezo_scan_{timestamp}.npz"

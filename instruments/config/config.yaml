@@ -2,7 +2,7 @@
 # Single source of truth for physical device identifiers. Every protocol
 # config (amplitude, phase) and standalone script should read these from
 # here instead of hardcoding them.
-camera_serial: '35596'
+camera_serial: '22500190' # PCO camera
 focus_serial: '27271402'
 polarizer_serial: '55001180'
 piezo_serial: '92100065'
@@ -10,10 +10,11 @@ powermeter_serial: '5003886'
 spectrometer_serial: 'SR600410'
 
 # ── Monochromator ─────────────────────────────────────────────────────────────
-monochromator_port: COM4                 # leave empty to be prompted at runtime
+monochromator_port: COM3                 # leave empty to be prompted at runtime
 monochromator_grating_mode: VIS Grating  # VIS Grating | IR Grating | Switch Mode
 
 # ── Camera ────────────────────────────────────────────────────────────────────
+camera_vendor: 'pco'        # thorlabs | pco
 camera_black_level: 0
 camera_bit_depth: 'uint16'       # raw frame dtype
 camera_out_bit_depth: 'float32'  # output dtype after averaging

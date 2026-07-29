@@ -11,21 +11,24 @@ Usage::
     python scripts/amplitude/test_connection.py [path/to/config.yaml]
 """
 
+import contextlib
 import sys
 from pathlib import Path
 
+from instruments.camera import open_camera
 from instruments.filterwheel import FilterWheelControl
 from instruments.kinesismotor import KinesisMotor
 from instruments.monochromator.mono import MonochromatorControl
-from instruments.pythorcam.thorcam import ThorlabsCamera, create_camera_sdk
 
 from amplitude.config import Config
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "amplitude" / "config" / "config.yaml"
 
 
-def check_camera(config: Config, sdk) -> None:
-    with ThorlabsCamera(sdk, config.camera_serial) as cam:
+def check_camera(config: Config) -> None:
+    with contextlib.ExitStack() as stack:
+        cam = open_camera(config, stack)
+        stack.enter_context(cam)
         cam.image_shape  # touches the open handle to confirm it responds
 
 
@@ -74,18 +77,7 @@ def main() -> int:
     results: list[tuple[str, bool, str]] = []
 
     record(results, "Monochromator", lambda: check_monochromator(config))
-
-    sdk = None
-    try:
-        sdk = create_camera_sdk()
-        record(results, "Camera", lambda: check_camera(config, sdk))
-    except Exception as exc:
-        print(f"[FAIL] Camera: {exc}")
-        results.append(("Camera", False, str(exc)))
-    finally:
-        if sdk is not None:
-            sdk.dispose()
-
+    record(results, "Camera", lambda: check_camera(config))
     record(results, "Filter wheel", lambda: check_filterwheel(config))
     record(results, "Focus motor", lambda: check_focus(config))
     record(results, "Polarizer", lambda: check_polarizer(config))

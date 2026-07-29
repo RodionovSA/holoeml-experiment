@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from instruments.pythorcam.utils import brightness_calibration as _brightness_calibration
+from instruments.camera.utils import brightness_calibration as _brightness_calibration
 
 from amplitude.measurements.context import MeasurementContext
 from amplitude.settings_store import Polarization

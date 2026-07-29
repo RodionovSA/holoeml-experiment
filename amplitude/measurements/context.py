@@ -89,8 +89,9 @@ class MeasurementContext:
 
     def apply_camera_exposure(self, es: ExposureSettings, es_idx: list[int], i: int) -> None:
         camera = self.camera
-        camera.set_exposure_time_us(int(es.exposure_ms[es_idx[i]] * 1000))
-        camera.set_gain(es.gain[es_idx[i]])
+        camera.set_exposure_ms(es.exposure_ms[es_idx[i]])
+        if camera.supports_gain:
+            camera.set_gain(es.gain[es_idx[i]])
 
     def save_npz(self, prefix: str, xpol: bool | None,
                  wavelengths: np.ndarray, images: list) -> Path:

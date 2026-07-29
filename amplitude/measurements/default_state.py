@@ -21,13 +21,14 @@ def run(ctx: MeasurementContext) -> None:
 
     if cfg.default_focus_position is not None:
         ctx.focus.move_to(cfg.default_focus_position)
-    ctx.camera.set_settings(
-        exposure_time_us=cfg.calib_initial_exposure_ms * 1000,
-        gain=cfg.calib_initial_gain,
-        black_level=cfg.camera_black_level,
-        bit_depth=getattr(np, cfg.camera_bit_depth),
-        out_bit_depth=getattr(np, cfg.camera_out_bit_depth),
-    )
+    camera = ctx.camera
+    camera.set_exposure_ms(cfg.calib_initial_exposure_ms)
+    if camera.supports_gain:
+        camera.set_gain(cfg.calib_initial_gain)
+    if camera.supports_black_level:
+        camera.set_black_level(cfg.camera_black_level)
+    camera.set_raw_bit_depth(getattr(np, cfg.camera_bit_depth))
+    camera.set_out_bit_depth(getattr(np, cfg.camera_out_bit_depth))
 
     if cfg.polarizer_x_position is not None:
         ctx.polarizer.move_to(cfg.polarizer_x_position)

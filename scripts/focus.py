@@ -35,6 +35,7 @@ Usage
 """
 
 import argparse
+import contextlib
 import threading
 import time
 from pathlib import Path
@@ -43,17 +44,17 @@ import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.widgets import Button, Slider, TextBox
 
+from instruments.camera import Camera, CameraStream, open_camera
+from instruments.camera.utils import calculate_focus_measure
 from instruments.config import load_equipment
 from instruments.kinesismotor import KinesisMotor
-from instruments.pythorcam.thorcam import CameraStream, ThorlabsCamera, create_camera_sdk
-from instruments.pythorcam.utils import calculate_focus_measure
 
 METRIC_CROP_SIZE = 512     # px, central region used for the focus/brightness readout
 METRIC_PERIOD_S = 0.1      # how often the background metric worker recomputes
 PROFILE_PERIOD_S = 2.0     # how often --profile prints a timing summary
 
 # ── Focus app defaults ──────────────────────────────────────────────────────
-INITIAL_EXPOSURE_MS = 300    # live-view starting exposure
+INITIAL_EXPOSURE_MS = 30    # live-view starting exposure
 MAX_EXPOSURE_MS = 1000       # upper bound of the exposure slider
 INITIAL_GAIN = 50             # starting gain (SDK units = tenths of a dB)
 
@@ -61,7 +62,7 @@ INITIAL_GAIN = 50             # starting gain (SDK units = tenths of a dB)
 class FocusApp:
     """Live camera view + exposure/gain/focus-motor controls (matplotlib widgets)."""
 
-    def __init__(self, camera: ThorlabsCamera, focus: KinesisMotor,
+    def __init__(self, camera: Camera, focus: KinesisMotor,
                  display_width: int = 1000, profile: bool = False):
         self.camera = camera
         self.focus = focus
@@ -132,10 +133,12 @@ class FocusApp:
         )
         self.sl_exposure.on_changed(self._on_exposure_changed)
 
-        # Gain slider (SDK units are tenths of a dB)
+        # Gain slider (SDK units are tenths of a dB). Some cameras (e.g. pco)
+        # have no gain control at all -- relabel and leave it visibly inert.
+        gain_label = 'Gain (dB)' if self.camera.supports_gain else 'Gain (dB) [unsupported]'
         ax_gain = self.fig.add_axes([0.2, 0.32, 0.6, 0.03])
         self.sl_gain = Slider(
-            ax_gain, 'Gain (dB)',
+            ax_gain, gain_label,
             valmin=0, valmax=48, valinit=INITIAL_GAIN / 10,
         )
         self.sl_gain.on_changed(self._on_gain_changed)
@@ -191,9 +194,11 @@ class FocusApp:
     # ── camera controls ───────────────────────────────────────────────────
 
     def _on_exposure_changed(self, value_ms: float) -> None:
-        self.camera.set_exposure_time_us(int(value_ms * 1000))
+        self.camera.set_exposure_ms(value_ms)
 
     def _on_gain_changed(self, value_db: float) -> None:
+        if not self.camera.supports_gain:
+            return
         self.camera.set_gain(int(round(value_db * 10)))
 
     # ── zoom / pan ───────────────────────────────────────────────────────
@@ -415,30 +420,30 @@ def main() -> None:
 
     eq = load_equipment(args.config)
 
-    sdk = create_camera_sdk()
-    try:
-        with ThorlabsCamera(sdk, eq.camera_serial) as camera, \
-             KinesisMotor(eq.focus_serial, motor_type='stage') as focus:
-            camera.set_settings(
-                exposure_time_us=INITIAL_EXPOSURE_MS * 1000,
-                gain=INITIAL_GAIN,
-                black_level=eq.camera_black_level,
-                bit_depth=getattr(np, eq.camera_bit_depth),
-                out_bit_depth=getattr(np, eq.camera_out_bit_depth),
-            )
-            if eq.default_focus_max_velocity or eq.default_focus_acceleration:
-                focus.set_velocity(max_velocity=eq.default_focus_max_velocity,
-                                    acceleration=eq.default_focus_acceleration)
+    with contextlib.ExitStack() as stack:
+        camera = open_camera(eq, stack)
+        stack.enter_context(camera)
+        focus = stack.enter_context(KinesisMotor(eq.focus_serial, motor_type='stage'))
 
-            camera.arm()
-            try:
-                app = FocusApp(camera, focus,
-                                display_width=args.display_width, profile=args.profile)
-                app.run()
-            finally:
-                camera.disarm()
-    finally:
-        sdk.dispose()
+        camera.set_exposure_ms(INITIAL_EXPOSURE_MS)
+        if camera.supports_gain:
+            camera.set_gain(INITIAL_GAIN)
+        if camera.supports_black_level:
+            camera.set_black_level(eq.camera_black_level)
+        camera.set_raw_bit_depth(getattr(np, eq.camera_bit_depth))
+        camera.set_out_bit_depth(getattr(np, eq.camera_out_bit_depth))
+
+        if eq.default_focus_max_velocity or eq.default_focus_acceleration:
+            focus.set_velocity(max_velocity=eq.default_focus_max_velocity,
+                                acceleration=eq.default_focus_acceleration)
+
+        camera.arm()
+        try:
+            app = FocusApp(camera, focus,
+                            display_width=args.display_width, profile=args.profile)
+            app.run()
+        finally:
+            camera.disarm()
 
 
 if __name__ == "__main__":

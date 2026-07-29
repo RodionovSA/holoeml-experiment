@@ -46,7 +46,7 @@ These drivers live under `instruments/` and are shared by every experiment in th
 **Hardware machines** additionally need:
 
 - Windows 10/11 (64-bit)
-- The three vendor SDKs described in [Vendor SDKs](#vendor-sdks-hardware-machines-only) below
+- The five vendor SDKs described in [Vendor SDKs](#vendor-sdks-hardware-machines-only) below
 - Arduino IDE — only needed for re-flashing the monochromator firmware
 
 ---
@@ -96,7 +96,7 @@ see below) to pick up dependency changes.
 
 ### Vendor SDKs (hardware machines only)
 
-Four instruments need a vendor SDK installed separately — Python packaging
+Five instruments need a vendor SDK installed separately — Python packaging
 alone can't distribute them (native DLLs, or not published to PyPI).
 
 #### Thorlabs camera — ThorCam SDK
@@ -184,6 +184,23 @@ as part of the `hardware` extra).
 
 No manual PATH edits are needed — the driver calls `os.add_dll_directory` on
 the Kinesis install folder automatically.
+
+#### Newport USFW-100 filter wheel — USFW-100 AWD Utility
+
+`instruments/filterwheel/filterwheel.py` talks to the wheel over PyVISA on a
+USB RAW resource, so it needs both the wheel's USB driver and a VISA backend
+installed — neither ships with Python packaging.
+
+1. Download the **USFW-100 AWD Utility** from the [Newport USFW-100 product page](https://www.newport.com/p/USFW-100) (Downloads / Resources tab).
+2. Run it and install the **USB filter wheel driver**. Without this, Windows
+   never enumerates the wheel and no VISA resource for it will appear.
+3. The same utility also installs **NI-VISA** — install it too. This is the
+   VISA backend `pyvisa.ResourceManager()` needs to open the wheel, and it
+   also covers the Thorlabs PM400 power meter (also VISA-based).
+4. Confirm the wheel's resource string (NI MAX, or
+   `pyvisa.ResourceManager().list_resources()`) and set it as
+   `filterwheel_address` in `instruments/config/config.yaml` — the committed
+   value is example-only; the USB serial is device-specific.
 
 #### Monochromator firmware
 

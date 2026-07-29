@@ -78,7 +78,7 @@ class Config:
 
     # ── Camera (required) ─────────────────────────────────────────────────────
     camera_serial: str
-    """Serial number string of the Thorlabs camera."""
+    """Serial number string of the camera."""
 
     # ─────────────────────────────────────────────────────────────────────────
     # Optional fields — all parameters below have defaults
@@ -89,6 +89,8 @@ class Config:
     """Wavelength (nm) the system returns to after init, calibration, and measurement."""
 
     # ── Camera ────────────────────────────────────────────────────────────────
+    camera_vendor: str = "thorlabs"
+    """Camera SDK to use: ``'thorlabs'`` or ``'pco'``. See ``instruments.camera.open_camera``."""
     camera_black_level: int = 0
     """Camera black level offset."""
     camera_bit_depth: str = 'uint16'

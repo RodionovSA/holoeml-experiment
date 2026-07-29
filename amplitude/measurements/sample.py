@@ -5,7 +5,7 @@ from __future__ import annotations
 import bisect
 from pathlib import Path
 
-from instruments.pythorcam.utils import autofocus as _autofocus
+from instruments.camera.utils import autofocus as _autofocus
 
 from amplitude.config import Config
 from amplitude.measurements.context import MeasurementContext
