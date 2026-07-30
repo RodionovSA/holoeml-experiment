@@ -11,6 +11,8 @@ Exposure at each level was set by autoexposure. Acquisition:
 [`scripts/test/thorcam_noise_bright.py`](../scripts/test/thorcam_noise_bright.py).
 All figures and numbers below are reproduced from
 [`thorcam_noise_analysis.ipynb`](../data/20260709_Camera_noise/thorcam_noise_analysis.ipynb).
+For the same analysis on the pco.edge 10 bi CLHS, including a head-to-head comparison of
+the two cameras, see [`photon_transfer_pco.md`](photon_transfer_pco.md).
 
 | Parameter | Value |
 |---|---|
@@ -68,7 +70,7 @@ applied to `dark_dn`), not extrapolated from the PTC intercept — the intercept
 linear fit through a signal range that starts at ~40 DN is a long, noisy extrapolation
 back to zero and is reported only as a diagnostic.
 
-![Photon transfer curve](figures/ptc_noise_decomposition.jpg)
+![Photon transfer curve](figures/thorcam_ptc_noise_decomposition.jpg)
 **Figure 1.** Full noise decomposition: σ_total (spatial), σ_temporal (difference
 method), σ_shot (fit), σ_read (dark-frame floor), σ_fpn (raw, quadrature), σ_prnu
 (detrended, quadrature). Log-log.
@@ -111,7 +113,7 @@ To check whether the two-frame difference method needs to worry about *temporal*
 flicker (as opposed to the spatial non-uniformity above), the frame-to-frame fluctuation
 of the ROI mean is compared to what shot+read noise alone would predict.
 
-![Lamp stability check](figures/lamp_stability_check.jpg)
+![Lamp stability check](figures/thorcam_lamp_stability_check.jpg)
 **Figure 2.** Measured frame-to-frame ROI-mean fluctuation (%) vs. the shot+read-noise
 prediction, across signal levels.
 
