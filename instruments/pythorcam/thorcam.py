@@ -73,6 +73,9 @@ class ThorlabsCamera(Camera):
         self.serial_number = serial_number
         self.cam_type = cam_type
         self.bit_depth = np.uint16
+        #: Set by `set_exposure_ms` while armed; consumed by `_flush` to
+        #: discard the one frame that was mid-exposure under the old setting.
+        self._settle_pending = False
 
         available = sdk.discover_available_cameras()
         if not available:
@@ -121,8 +124,16 @@ class ThorlabsCamera(Camera):
         return self._MAX_GAIN
 
     def set_exposure_ms(self, exposure_ms: float) -> None:
-        """Set exposure time in milliseconds."""
+        """Set exposure time in milliseconds.
+
+        Applies directly, with no re-arm -- the camera keeps free-running off
+        the single software trigger issued in `arm()`. The frame already in
+        flight (and anything already queued) still carries the old exposure;
+        `_flush()` discards it before the next capture, same idea `PcoCamera`
+        implements for its ring buffer.
+        """
         self._camera.exposure_time_us = int(exposure_ms * 1000)
+        self._settle_pending = self._camera.is_armed
 
     def _set_gain(self, gain: int) -> None:
         """Set sensor gain in SDK-defined units (see Thorlabs TSI SDK docs;
@@ -144,10 +155,30 @@ class ThorlabsCamera(Camera):
         """Arm the camera in mode 2 (software-triggered, 2-frame buffer) and issue a software trigger."""
         self._camera.arm(2)
         self._camera.issue_software_trigger()
+        self._settle_pending = False
 
     def disarm(self) -> None:
         """Stop frame acquisition."""
         self._camera.disarm()
+        self._settle_pending = False
+
+    def _flush(self) -> None:
+        """Discard frames already in flight or sitting in the 2-deep queue.
+
+        Drains whatever `get_pending_frame_or_null()` has queued up (the
+        camera free-runs continuously off the single trigger in `arm()`, so
+        this can be nonzero even without an exposure change -- e.g. after the
+        caller moved the monochromator or focus motor). If `set_exposure_ms`
+        ran since the last flush, one more frame is pulled and discarded: the
+        frame that was already mid-exposure under the *old* setting when that
+        call returned, which draining the queue alone cannot distinguish from
+        a genuinely fresh one.
+        """
+        while self._camera.get_pending_frame_or_null() is not None:
+            pass
+        if self._settle_pending:
+            self._get_single_frame()
+            self._settle_pending = False
 
     def _get_single_frame(self, timeout: float = 5.0) -> np.ndarray:
         """Block until one frame arrives, then return it as (H, W, C) of `self.bit_depth`.

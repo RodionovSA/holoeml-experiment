@@ -18,7 +18,9 @@ import numpy as np
 _EQ = load_equipment()
 SERIAL = _EQ.camera_serial
 ROI_FRACTION = 0.1        # central 10% x 10% of the sensor, restricted in hardware (see set_roi)
-NUM_SETTLE_FRAMES = 2      # dropped after each exposure change
+NUM_SETTLE_FRAMES = 2      # dropped after each exposure change, on top of the
+                            # driver's own settle barrier (PcoCamera.EXPOSURE_SETTLE_FRAMES) --
+                            # margin here, not the mechanism that guarantees freshness.
 PROBE_EXPOSURE_US = 10_000    # starting probe to find the DN<->exposure scale
 PROBE_SATURATION_FRACTION = 0.9  # guards only the fixed-exposure probe (level 0 seed) against
                                   # landing in the nonlinear near-saturation regime; does not

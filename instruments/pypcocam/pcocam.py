@@ -20,12 +20,29 @@ but `arm()` here means `pco.Camera.record(...)`, which doesn't just re-validate
 settings -- it tears down and reallocates the vendor's DMA-backed ring-buffer
 recorder from scratch every time. Doing that once per exposure change was
 observed to cause the frame-wait to stall a few cycles later, so exposure changes
-now rely purely on the settle-frame-drop mechanism `autoexposure`/`get_image`
-already provide (`num_frames_to_drop`) to skip over any transitional frame, same
-as the Thorlabs path.
+instead rely on an explicit settle barrier tracked in this class (see
+`EXPOSURE_SETTLE_FRAMES` / `_settle_target` below).
+
+That barrier exists because the vendor's own `wait_for_new_image` is not
+sufficient on its own: it only blocks until the recorder's processed-image
+count exceeds the index of the last frame *this process copied*
+(`pco.Camera._image_number`, updated inside `image()`). In a free-running ring
+buffer, that count has usually already advanced past the caller by the time
+`set_exposure_ms` runs (e.g. after a monochromator move), so the very next
+`image(_LATEST_IMAGE)` call returns instantly with a frame that started
+integrating under the *old* exposure -- confirmed empirically in
+`scripts/test/test_pco_camera.ipynb` (every other frame read back saturated
+or under-exposed by exactly one exposure setting). The barrier fixes this by
+tracking, in addition to "has a new frame arrived", "has the recorder processed
+at least N more frames since I last changed something that affects the frame's
+content" -- exposure (`set_exposure_ms`) or anything upstream of the camera
+that a caller signals via `_flush()` (e.g. `sample.py` moving the focus motor
+*after* applying the new exposure but before capturing).
 """
 
 from __future__ import annotations
+
+import time
 
 import numpy as np
 import pco
@@ -34,6 +51,14 @@ from instruments.camera.base import Camera
 
 #: pco's sentinel for "the most recently recorded image" (see pco.Camera.image()).
 _LATEST_IMAGE = 0xFFFFFFFF
+
+#: `dwProcImgCount` is a uint32 recorder frame counter (`pco.Recorder.get_status`).
+_UINT32_MOD = 1 << 32
+
+
+def _reached(count: int, target: int) -> bool:
+    """Wrap-safe ``count >= target`` for the recorder's uint32 frame counter."""
+    return ((count - target) % _UINT32_MOD) < (_UINT32_MOD >> 1)
 
 
 class PcoCamera(Camera):
@@ -44,6 +69,28 @@ class PcoCamera(Camera):
 
     #: Depth of the ring buffer used by `arm()` / `_get_single_frame()`.
     RING_BUFFER_SIZE = 4
+
+    #: Frames the recorder must process after an exposure change before a grab
+    #: is trusted: one for whatever frame was already in flight under the old
+    #: exposure, one more so the new timing isn't caught mid-latch at a frame
+    #: boundary. Not underscore-prefixed so a verification/calibration script
+    #: can override it on the class or an instance (e.g. set to 0 to reproduce
+    #: pre-fix behaviour, or sweep it to find the minimum this camera needs).
+    #: See `scripts/test/pco_exposure_settle.py`.
+    EXPOSURE_SETTLE_FRAMES = 2
+
+    #: Frames the recorder must process after `_flush()` before a grab is
+    #: trusted. Covers callers that move other hardware (monochromator, filter
+    #: wheel, focus motor) between an exposure change and the actual capture --
+    #: `amplitude/measurements/sample.py` moves focus *after*
+    #: `apply_camera_exposure`, for example. Smaller than
+    #: `EXPOSURE_SETTLE_FRAMES` since no firmware reprogramming is involved,
+    #: just draining whatever the free-running recorder already produced.
+    FLUSH_SETTLE_FRAMES = 1
+
+    #: Poll interval while waiting for the settle barrier, matching the vendor
+    #: `wait_for_new_image`'s own polling cadence.
+    _SETTLE_POLL_S = 0.001
 
     def __init__(self, serial: str):
         """Connect to a pco camera by serial number.
@@ -61,6 +108,14 @@ class PcoCamera(Camera):
         self._cam = pco.Camera(serial=int(serial))
         self._cam.auto_exposure_off()
         self._armed = False
+        #: Recorder frame index (`dwProcImgCount`, mod 2**32) that must be
+        #: reached before a grab is considered settled, or `None` if no
+        #: barrier is pending. Set by `_require_fresh_frames` (called from
+        #: `set_exposure_ms` / `_flush`), consumed by `_await_settle` (called
+        #: from `_get_single_frame`). Cleared on `arm`/`disarm` since
+        #: `record()`/`stop()` reset the vendor's own counter to 0.
+        self._settle_target: int | None = None
+        self._settle_timeout_s = 0.0
 
         # Cached once at connect (read-only unless IR sensitivity is toggled, which this
         # driver never does). The vendor `exposure_time` setter's own guard admits values
@@ -144,10 +199,14 @@ class PcoCamera(Camera):
         belt-and-braces: the firmware quantizes internally, this just keeps us off
         the boundary it's rejecting.
 
-        Applies directly with no recorder restart -- any frame still in flight under
-        the old exposure is the caller's problem to drop via `num_frames_to_drop`
-        (`autoexposure`/`get_image` already do this), same as `ThorlabsCamera`.
+        Applies directly with no recorder restart. Any frame still in flight under the
+        old exposure -- or already sitting in the ring buffer -- is handled by the
+        settle barrier: this arms it so `_get_single_frame` won't return a grab
+        until `EXPOSURE_SETTLE_FRAMES` fresh frames have been processed, the same
+        idea `ThorlabsCamera._flush` implements for its FIFO queue.
         """
+        previous_exposure_s = self._cam.exposure_time
+
         ns = round(exposure_ms * 1e6)
         ns = min(max(ns, self._min_exposure_ns), self._max_exposure_ns)
         ns = min(-(-ns // self._exposure_step_ns) * self._exposure_step_ns, self._max_exposure_ns)
@@ -156,6 +215,13 @@ class PcoCamera(Camera):
         # the half-nanosecond nudge stops float round-trip error from dropping the
         # applied value a count below `ns` (and back under the hardware minimum).
         self._cam.exposure_time = (ns + 0.5) / 1e9
+
+        # The frame already in flight when this runs was exposed for as long as the
+        # *old* setting, not the new one -- e.g. going 1000ms -> 200ms, that frame
+        # still takes up to 1s to finish. Size the settle timeout on whichever is
+        # longer so a big drop in exposure can't time out waiting on its own barrier.
+        self._require_fresh_frames(self.EXPOSURE_SETTLE_FRAMES,
+                                    exposure_s=max(previous_exposure_s, ns / 1e9))
 
     def set_roi(self, width: int, height: int) -> None:
         """Restrict the hardware ROI to a centered window of approximately
@@ -168,8 +234,10 @@ class PcoCamera(Camera):
         requirement (`description['roi is horz/vert symmetric']`) whether or not it's
         actually enforced.
 
-        Like `set_exposure_ms`, this disarms and re-arms if the camera is currently
-        armed -- the SDK rejects ROI changes while a recording is in progress.
+        Unlike `set_exposure_ms`, this disarms and re-arms if the camera is currently
+        armed -- the SDK rejects ROI changes while a recording is in progress. That
+        re-arm already resets the settle barrier (see `arm`), so no separate
+        settle call is needed here.
         """
         width = min(max(width, self._min_roi_width), self._sensor_width)
         height = min(max(height, self._min_roi_height), self._sensor_height)
@@ -192,11 +260,82 @@ class PcoCamera(Camera):
         """Start continuous acquisition into a ring buffer."""
         self._cam.record(number_of_images=self.RING_BUFFER_SIZE, mode="ring buffer")
         self._armed = True
+        # record() resets the vendor's own dwProcImgCount to 0; a barrier armed
+        # against the previous recording's counter would be stale (either an
+        # instant false-pass or a phantom multi-second wait).
+        self._settle_target = None
+        self._settle_timeout_s = 0.0
 
     def disarm(self) -> None:
         """Stop acquisition."""
         self._cam.stop()
         self._armed = False
+        self._settle_target = None
+        self._settle_timeout_s = 0.0
+
+    def _frames_processed(self) -> int:
+        """Recorder's running count of images processed since `arm()` (uint32)."""
+        return self._cam.rec.get_status()["dwProcImgCount"]
+
+    def _require_fresh_frames(self, n_frames: int, exposure_s: float | None = None) -> None:
+        """Arm (or extend) the settle barrier: the next `_get_single_frame()`
+        call blocks until `n_frames` more frames have been processed.
+
+        No-op while disarmed -- `arm()` calls `record()`, which latches current
+        settings and resets the frame counter, so there is nothing to wait out
+        yet. If a barrier is already pending, keep whichever target is further
+        in the future rather than overwriting it (covers `set_exposure_ms`
+        immediately followed by `_flush()`, or vice versa).
+        """
+        if not self._armed or n_frames <= 0:
+            return
+        target = (self._frames_processed() + n_frames) % _UINT32_MOD
+        if self._settle_target is None or _reached(target, self._settle_target):
+            self._settle_target = target
+        if exposure_s is None:
+            exposure_s = self._cam.exposure_time
+        self._settle_timeout_s = max(
+            self._settle_timeout_s,
+            n_frames * (exposure_s + self._FRAME_TIMEOUT_MARGIN_S),
+        )
+
+    def _await_settle(self) -> None:
+        """Block until the pending settle barrier (if any) is satisfied."""
+        target = self._settle_target
+        if target is None:
+            return
+        deadline = time.perf_counter() + self._settle_timeout_s
+        try:
+            while True:
+                status = self._cam.rec.get_status()
+                if not status["bIsRunning"]:
+                    # Recording stopped from under us (e.g. another thread
+                    # disarmed); nothing left to wait for -- let the caller's
+                    # own wait_for_new_image/timeout handle what comes next.
+                    return
+                if _reached(status["dwProcImgCount"], target):
+                    return
+                if time.perf_counter() > deadline:
+                    raise TimeoutError(
+                        f"Camera {self.serial_number}: exposure/flush settle barrier "
+                        f"(target frame {target}, now {status['dwProcImgCount']}) not "
+                        f"reached within {self._settle_timeout_s:.1f}s"
+                    )
+                time.sleep(self._SETTLE_POLL_S)
+        finally:
+            self._settle_target = None
+            self._settle_timeout_s = 0.0
+
+    def _flush(self) -> None:
+        """Discard frames already in flight or buffered before this call.
+
+        Called by `Camera.get_image()` before its drop/average loop. Arms a
+        (smaller) settle barrier so a caller that moved other hardware --
+        monochromator, filter wheel, focus motor -- between the last exposure
+        change and this capture still gets a frame acquired after that move,
+        not whatever was already sitting in the free-running ring buffer.
+        """
+        self._require_fresh_frames(self.FLUSH_SETTLE_FRAMES)
 
     #: Extra margin (s) added on top of the configured exposure for the default
     #: per-frame wait timeout, covering sensor readout/transfer and general system
@@ -207,17 +346,22 @@ class PcoCamera(Camera):
     _FRAME_TIMEOUT_MARGIN_S = 5.0
 
     def _get_single_frame(self, timeout: float | None = None) -> np.ndarray:
-        """Block until a new frame is available, then return it as (H, W, 1).
+        """Block until a new, settled frame is available, then return it as (H, W, 1).
+
+        First waits out any pending settle barrier (see `_require_fresh_frames`),
+        then waits for that settled frame to actually be copyable.
 
         Parameters
         ----------
         timeout : float or None
-            Maximum seconds to wait for a new frame before raising TimeoutError.
-            Defaults to the currently configured exposure time plus
-            `_FRAME_TIMEOUT_MARGIN_S` -- `Camera.get_image()` (the only other
-            caller of this method) never overrides it, so a fixed default has to
-            scale with exposure itself rather than assume exposures stay short.
+            Maximum seconds to wait for a new frame *after* the settle barrier
+            clears, before raising TimeoutError. Defaults to the currently
+            configured exposure time plus `_FRAME_TIMEOUT_MARGIN_S` --
+            `Camera.get_image()` (the only other caller of this method) never
+            overrides it, so a fixed default has to scale with exposure itself
+            rather than assume exposures stay short.
         """
+        self._await_settle()
         if timeout is None:
             timeout = self._cam.exposure_time + self._FRAME_TIMEOUT_MARGIN_S
         self._cam.wait_for_new_image(delay=True, timeout=timeout)

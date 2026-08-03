@@ -147,19 +147,33 @@ class Camera(ABC):
         decode frames (see ``ThorlabsCamera``). No-op otherwise."""
         pass
 
+    def _flush(self) -> None:
+        """Discard frames already in flight or sitting in the driver's buffer.
+
+        Called once at the top of `get_image`, before the `num_frames_to_drop`
+        loop, so that loop counts frames that genuinely arrive *after* the
+        call -- not frames that were already queued (e.g. left over from a
+        free-running acquisition) while the caller was moving hardware or
+        changing exposure. Default is a no-op; vendors that buffer frames
+        ahead of the caller (``PcoCamera``, ``ThorlabsCamera``) override it.
+        """
+        pass
+
     def get_image(self,
                   num_frames_to_average: int = 1,
                   num_frames_to_drop: int = 0,
                   delay: float = 0) -> np.ndarray:
-        """Drop `num_frames_to_drop` frames, then capture and average `num_frames_to_average` frames.
+        """Flush stale/buffered frames, drop `num_frames_to_drop` more, then
+        capture and average `num_frames_to_average` frames.
 
         Parameters
         ----------
         num_frames_to_average : int
             Number of frames to mean together. Output is the per-pixel mean.
         num_frames_to_drop : int
-            Number of frames to discard before averaging (lets the sensor settle
-            after exposure / gain changes).
+            Number of *fresh* frames to discard before averaging, on top of
+            the implicit flush (lets the sensor settle after exposure / gain
+            changes).
         delay : float
             Seconds to sleep between dropped frames.
 
@@ -168,6 +182,7 @@ class Camera(ABC):
         np.ndarray
             Shape (H, W, C), dtype `out_bit_depth`.
         """
+        self._flush()
         for _ in range(num_frames_to_drop):
             self._get_single_frame()
             if delay:
