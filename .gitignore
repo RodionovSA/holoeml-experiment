@@ -5,3 +5,4 @@ instruments/pythorcam/thorcam-sdk/
 *.DS_store
 data/
 *.obsidian
+.venv

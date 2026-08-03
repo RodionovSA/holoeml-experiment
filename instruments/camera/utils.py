@@ -103,15 +103,15 @@ def autofocus(camera_trans: Camera,
     ----------
     camera_trans : Camera
         Sample-arm (or sole) camera.  Must already be armed.
-    focus_motor : pylablib KinesisMotor
-        Must expose ``setup_velocity``, ``move_to``, ``wait_move``, and
-        ``get_position`` (standard pylablib KinesisMotor API).
+    focus_motor : instruments.kinesismotor.KinesisMotor
+        Must expose ``set_velocity``, ``move_to``, ``wait_move``, and
+        ``get_position`` (the :class:`KinesisMotor` wrapper API).
     start_position, end_position : float
-        Sweep range in motor native units (metres for KinesisMotor with scale='stage').
+        Sweep range in mm.
     step_size : float
-        Step in motor native units.
+        Step in mm.
     velocity : float
-        Motor velocity in motor native units / s.
+        Motor velocity in mm/s.
     camera_ref : Camera or None
         Reference-arm camera.  When ``None``, normalization is skipped.
     num_frames_to_average, num_frames_to_drop : int
@@ -122,7 +122,7 @@ def autofocus(camera_trans: Camera,
     Returns
     -------
     best_position : float
-        Motor position (motor native units) with the highest focus metric.
+        Motor position (mm) with the highest focus metric.
     focus_curve : np.ndarray, shape (2, steps)
         Row 0 is positions, row 1 is focus metric values.
     images : np.ndarray, shape (steps, H, W)
@@ -137,7 +137,7 @@ def autofocus(camera_trans: Camera,
     focus_values = -np.ones(steps)
     images = np.zeros([steps, camera_trans.image_height, camera_trans.image_width])
 
-    focus_motor.setup_velocity(max_velocity=velocity)
+    focus_motor.set_velocity(max_velocity=velocity)
     focus_motor.move_to(float(start_position))
     focus_motor.wait_move()
     time.sleep(0.5)

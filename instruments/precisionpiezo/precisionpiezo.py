@@ -11,9 +11,9 @@ class PrecisionPiezoCT1P:
     The CT1P has a piezo driver built directly into the stage (no separate KIM/K-Cube
     controller) and connects straight to the PC over USB. Kinesis exposes it as an
     ``IntegratedPrecisionPiezo`` device, distinct from the benchtop ``PPC00X`` piezo
-    controllers, so it is *not* reachable through pylablib's ``Thorlabs.KinesisMotor``
-    (used by :class:`instruments.kinesismotor.KinesisMotor` for KDC101/K10CR1 stages).
-    Instead this class drives the Kinesis .NET assemblies directly via ``pythonnet``.
+    controllers and from the KDC101/K10CR1 stages driven by
+    :class:`instruments.kinesismotor.KinesisMotor`, so it needs its own set of Kinesis
+    .NET assemblies. Like that class, this one drives them directly via ``pythonnet``.
 
     Windows only: requires **Kinesis** to be installed (default
     ``C:\\Program Files\\Thorlabs\\Kinesis``, override with the ``KINESIS_DIR`` env var

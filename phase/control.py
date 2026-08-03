@@ -219,24 +219,18 @@ class Control:
         scan; the caller is responsible for restoring sweep velocity afterwards.
         """
         cfg = self.config
-        _mm = 1e-3
-        start_m = (center_position_mm - cfg.autofocus_scan_half_range_mm) * _mm
-        end_m   = (center_position_mm + cfg.autofocus_scan_half_range_mm) * _mm
-        step_m  = cfg.autofocus_step_size_mm * _mm
-        vel_m   = cfg.autofocus_velocity_mm_s * _mm
-        best_pos_m, _curve, _images = _autofocus(
+        best_mm, _curve, _images = _autofocus(
             camera_trans=self.camera,
-            focus_motor=self.focus.km,
-            start_position=start_m,
-            end_position=end_m,
-            step_size=step_m,
-            velocity=vel_m,
+            focus_motor=self.focus,
+            start_position=center_position_mm - cfg.autofocus_scan_half_range_mm,
+            end_position=center_position_mm + cfg.autofocus_scan_half_range_mm,
+            step_size=cfg.autofocus_step_size_mm,
+            velocity=cfg.autofocus_velocity_mm_s,
             camera_ref=None,
             num_frames_to_average=1,
             num_frames_to_drop=cfg.autofocus_num_frames_to_drop,
             delay=0,
         )
-        best_mm = best_pos_m / _mm
         print(f'[autofocus] best position: {best_mm:.4f} mm')
         return best_mm
 

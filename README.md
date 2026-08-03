@@ -58,7 +58,7 @@ path that matches your machine.
 
 ### Option A — Analysis / no hardware attached (any OS)
 
-Hardware-only packages (`pylablib`, `pyqt5-qt5`, `pyvisa`, `thorlabs-tsi-sdk`)
+Hardware-only packages (`pythonnet`, `pyqt5-qt5`, `pyvisa`, `thorlabs-tsi-sdk`)
 live behind the `hardware` extra in `pyproject.toml`, so you don't need any of
 the vendor SDKs below. Install with:
 
@@ -165,12 +165,12 @@ No manual PATH edits are needed — both defaults match a standard OPM install.
 
 #### Thorlabs CT1P precision piezo — Kinesis
 
-Unlike the focus/polarizer stages (`instruments/kinesismotor/`, driven through
-pylablib), the CT1P's integrated piezo actuator is a Kinesis device type
-(`IntegratedPrecisionPiezo`) that pylablib doesn't support. The driver
-(`instruments/precisionpiezo/precisionpiezo.py`) instead talks to the Kinesis
-.NET API directly via [`pythonnet`](https://pythonnet.github.io/) (installed
-as part of the `hardware` extra).
+Like the focus/polarizer stages (`instruments/kinesismotor/`), the CT1P's
+integrated piezo actuator is driven through the Kinesis .NET API directly via
+[`pythonnet`](https://pythonnet.github.io/) (installed as part of the
+`hardware` extra) — it's just a different Kinesis device type
+(`IntegratedPrecisionPiezo`, in `instruments/precisionpiezo/precisionpiezo.py`)
+from the KDC101/K10CR1 stages `KinesisMotor` drives.
 
 1. Install **Kinesis** from the [Thorlabs Kinesis software page](https://www.thorlabs.com/software_pages/ViewSoftwarePage.cfm?Code=Motion_Control&viewtab=0) (version 1.14.26 or later — earlier releases predate CT1P support).
 2. The driver loads the Kinesis assemblies from the standard install path:
@@ -252,7 +252,7 @@ instruments/            # Shared hardware drivers, used by all experiments
     monochromator_3modes/
       monochromator_3modes.ino  # Arduino firmware (AccelStepper)
   filterwheel/           # Newport USFW-100 driver via PyVISA
-  kinesismotor/          # KinesisMotor — Kinesis stage control (focus + polarizer), via pylablib
+  kinesismotor/          # KinesisMotor — Kinesis stage control (focus + polarizer), via Kinesis .NET/pythonnet
   precisionpiezo/        # PrecisionPiezoCT1P — CT1P integrated piezo z-stage, via Kinesis .NET/pythonnet
   powermeter/            # PM400 — Thorlabs optical power meter (TLPM ctypes driver)
   spectrometer/          # Spectrometer — Ocean Optics spectrometer (OceanDirect SDK)
