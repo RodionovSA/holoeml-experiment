@@ -26,6 +26,7 @@ class KinesisMotor:
         self.motor_type = motor_type
         self.units = self.km.get_scale_units()
         self.scale = 1e-3 if self.units == 'm' else 1
+        self.serial = serial
 
         if self.units == 'deg':
             self.km.setup_limit_switch(hw_kind_cw='make_home', hw_kind_ccw='make_home')
@@ -40,10 +41,12 @@ class KinesisMotor:
     def move_to(self, position: float):
         self.km.move_to(position * self.scale)
         self.km.wait_move()
+        print(f"Motor: {self.serial} moved to {position*self.scale:.6f} {self.units}")
 
     def move_by(self, position: float):
         self.km.move_by(position * self.scale)
         self.km.wait_move()
+        print(f"Motor: {self.serial} moved by {position*self.scale:.6f} {self.units}")
 
     def get_position(self) -> float:
         return self.km.get_position() / self.scale

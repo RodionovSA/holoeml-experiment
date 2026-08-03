@@ -15,14 +15,14 @@ default_focus_position: 17.2345  # mm (reference position at 550 nm)
 focus_use_current_position: true               # true = per-wavelength offsets relative to current motor position at sweep start
 
 # ── Brightness calibration ────────────────────────────────────────────────────
-calib_target_brightness: 0.5     # target mean pixel value, normalised 0–1
-calib_tolerance: 0.02            # acceptable deviation from target
-calib_increment: 0.1             # multiplicative step size per iteration (±10%)
+calib_target_brightness: 0.16    # target mean pixel value, normalised 0–1
+calib_tolerance: 0.01            # acceptable deviation from target
+calib_increment: 0.05             # multiplicative step size per iteration (±10%)
 calib_gain_step_db: 0.5          # gain step in dB per iteration
 calib_priority: 'exposure_time'  # exposure_time | gain
 calib_max_steps: 50
-calib_max_exposure_ms: 1000
-calib_initial_exposure_ms: 300
+calib_max_exposure_ms: 2000
+calib_initial_exposure_ms: 100
 calib_initial_gain: 0
 calib_num_frames_to_average: 1
 calib_num_frames_to_drop: 1
@@ -34,9 +34,9 @@ save_dir: '.'
 num_frames_to_average: 10
 num_frames_to_drop: 1
 capture_delay: 0.0               # s — delay between captures
-exposure_settings_path: 'amplitude\config\exposure_settings.json'
-exposure_settings_xpol_path: 'amplitude\config\exposure_settings_xpol.json'
-exposure_settings_ypol_path: 'amplitude\config\exposure_settings_ypol.json'
+exposure_settings_path: 'amplitude\config\exposure_settings_pco.json'
+exposure_settings_xpol_path: 'amplitude\config\exposure_settings_pco_xpol.json'
+exposure_settings_ypol_path: 'amplitude\config\exposure_settings_pco_ypol.json'
 focus_settings_path: 'amplitude\config\focus_settings.json'
 
 # ── Autofocus ─────────────────────────────────────────────────────────────────

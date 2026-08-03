@@ -19,7 +19,7 @@ def run(ctx: MeasurementContext) -> None:
     ctx.mono.set_wavelength(cfg.default_wavelength)
     ctx.filterwheel.set_position(cfg.filterwheel_empty_pos)
 
-    if cfg.default_focus_position is not None:
+    if not cfg.focus_use_current_position:
         ctx.focus.move_to(cfg.default_focus_position)
     camera = ctx.camera
     camera.set_exposure_ms(cfg.calib_initial_exposure_ms)
