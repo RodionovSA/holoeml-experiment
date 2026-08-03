@@ -115,9 +115,7 @@ if __name__ == "__main__":
         sensor_h, sensor_w = camera.sensor_shape
         target_h = 2 * max(1, int(sensor_h * ROI_FRACTION / 2))
         target_w = 2 * max(1, int(sensor_w * ROI_FRACTION / 2))
-        x0 = (sensor_w - target_w) // 2 + 1     # 1-based, inclusive; see PcoCamera.set_roi
-        y0 = (sensor_h - target_h) // 2 + 1
-        camera.set_roi(x0, y0, x0 + target_w - 1, y0 + target_h - 1)
+        camera.set_roi(target_w, target_h)
         roi_h, roi_w = camera.image_shape  # actual size after hardware step-rounding
 
         array_bytes = 2 * N_LEVELS * NUM_FRAMES * roi_h * roi_w * np.dtype(np.float32).itemsize
