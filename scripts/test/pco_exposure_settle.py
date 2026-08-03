@@ -85,7 +85,10 @@ def main() -> int:
     args = parser.parse_args()
 
     with PcoCamera(SERIAL) as camera:
-        camera.set_roi(ROI, ROI)
+        sensor_h, sensor_w = camera.sensor_shape
+        x0 = (sensor_w - ROI) // 2 + 1     # 1-based, inclusive; see PcoCamera.set_roi
+        y0 = (sensor_h - ROI) // 2 + 1
+        camera.set_roi(x0, y0, x0 + ROI - 1, y0 + ROI - 1)
         camera.arm()
         time.sleep(0.1)
 

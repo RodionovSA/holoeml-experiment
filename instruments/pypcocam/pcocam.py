@@ -223,29 +223,38 @@ class PcoCamera(Camera):
         self._require_fresh_frames(self.EXPOSURE_SETTLE_FRAMES,
                                     exposure_s=max(previous_exposure_s, ns / 1e9))
 
-    def set_roi(self, width: int, height: int) -> None:
-        """Restrict the hardware ROI to a centered window of approximately
-        (width, height) pixels, instead of transferring the full sensor every frame.
+    def set_roi(self, x0: int, y0: int, x1: int, y1: int) -> None:
+        """Restrict the hardware ROI to (x0, y0, x1, y1), instead of transferring
+        the full sensor every frame.
 
-        The requested size is clamped to the sensor and rounded up to the ROI step
-        grid the sensor's readout architecture requires (`description['roi steps']`);
-        call `image_shape` afterwards for the actual applied size. The window is
-        always centered on the sensor, which satisfies this camera's ROI symmetry
-        requirement (`description['roi is horz/vert symmetric']`) whether or not it's
-        actually enforced.
+        Same 1-based, inclusive convention as the vendor SDK itself
+        (`pco.Camera.configuration['roi']`, `sdk.get_roi()` / `sdk.set_roi()`),
+        so a value read from one can be fed straight into this.
+
+        The window is clamped to the sensor, then its width/height are rounded
+        up to the ROI step grid the sensor's readout architecture requires
+        (`description['roi steps']`), growing toward increasing x1/y1 (x0, y0
+        are left as given) and clamped back to the sensor if that would run
+        off the edge; call `image_shape` afterwards for the actual applied
+        size. Some pco sensors additionally require the ROI to be centered /
+        symmetric about the sensor (`description['roi is horz/vert
+        symmetric']`); that is not enforced here -- the vendor SDK is, and
+        rejects a violating window with a CameraException.
 
         Unlike `set_exposure_ms`, this disarms and re-arms if the camera is currently
         armed -- the SDK rejects ROI changes while a recording is in progress. That
         re-arm already resets the settle barrier (see `arm`), so no separate
         settle call is needed here.
         """
-        width = min(max(width, self._min_roi_width), self._sensor_width)
-        height = min(max(height, self._min_roi_height), self._sensor_height)
-        width = min(-(-width // self._roi_step_x) * self._roi_step_x, self._sensor_width)
-        height = min(-(-height // self._roi_step_y) * self._roi_step_y, self._sensor_height)
+        x0 = min(max(x0, 1), self._sensor_width)
+        y0 = min(max(y0, 1), self._sensor_height)
+        x1 = min(max(x1, x0), self._sensor_width)
+        y1 = min(max(y1, y0), self._sensor_height)
 
-        x0 = (self._sensor_width - width) // 2 + 1     # 1-based, inclusive
-        y0 = (self._sensor_height - height) // 2 + 1
+        width = max(self._min_roi_width, x1 - x0 + 1)
+        height = max(self._min_roi_height, y1 - y0 + 1)
+        width = min(-(-width // self._roi_step_x) * self._roi_step_x, self._sensor_width - x0 + 1)
+        height = min(-(-height // self._roi_step_y) * self._roi_step_y, self._sensor_height - y0 + 1)
         x1 = x0 + width - 1
         y1 = y0 + height - 1
 
