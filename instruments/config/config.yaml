@@ -4,8 +4,8 @@
 # here instead of hardcoding them.
 camera_serial: '22500190' # PCO camera
 focus_serial: '27271402'
-sample_x_serial: '27271402'
-sample_y_serial: '27271402'
+stage_x_serial: '27271402'
+stage_y_serial: '27271402'
 polarizer_serial: '55001180'
 piezo_serial: '92100065'
 powermeter_serial: '5003886'
@@ -26,8 +26,8 @@ default_focus_max_velocity: 0.2  # mm/s
 default_focus_acceleration: 0.2  # mm/s²
 
 # ── Sample stage motor along xy (shared kinematics; reference position is protocol-specific) ──
-default_sample_max_velocity: 0.2  # mm/s
-default_sample_acceleration: 0.2  # mm/s²
+default_stage_max_velocity: 0.2  # mm/s
+default_stage_acceleration: 0.2  # mm/s²
 
 # ── Polarizer motor ───────────────────────────────────────────────────────────
 polarizer_x_position: 175  # deg
