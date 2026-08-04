@@ -23,6 +23,10 @@ class EquipmentConfig:
     """Serial number string of the camera."""
     focus_serial: str = ""
     """Serial number string of the Thorlabs Kinesis focus motor."""
+    sample_x_serial: str = ""
+    """Serial number string of the Thorlabs Kinesis sample stage motor along x."""
+    sample_y_serial: str = ""
+    """Serial number string of the Thorlabs Kinesis sample stage motor along y."""
     polarizer_serial: str = ""
     """Serial number string of the Thorlabs Kinesis polarizer rotation stage."""
     piezo_serial: str = ""
@@ -55,7 +59,13 @@ class EquipmentConfig:
     """Focus motor max velocity (mm/s). ``None`` skips."""
     default_focus_acceleration: float | None = None
     """Focus motor acceleration (mm/s²). ``None`` skips."""
-
+    
+    # ── Sample stage motor along xy (kinematics only — reference position is protocol-specific) ─
+    default_sample_max_velocity: float | None = None
+    """Sample stage motor x max velocity (mm/s). ``None`` skips."""
+    default_sample_acceleration: float | None = None
+    """Sample stage motor x acceleration (mm/s²). ``None`` skips."""
+        
     # ── Polarizer motor ──────────────────────────────────────────────────────
     polarizer_x_position: float | None = None
     """Polarizer position for x-polarization state. ``None`` skips."""
