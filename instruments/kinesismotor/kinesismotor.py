@@ -8,11 +8,7 @@ class KinesisMotor:
     """Thin wrapper around the Thorlabs Kinesis .NET API for KDC101 (linear, mm) and
     K10CR1 (rotary, deg) stages.
 
-    This used to wrap pylablib's ``Thorlabs.KinesisMotor``, but pylablib is
-    effectively abandoned (its last-ever release pins an ancient ``numba`` that
-    doesn't support modern Python/numpy) and only ever drove these two controller
-    families here. This class drives the Kinesis .NET assemblies directly via
-    ``pythonnet`` instead, mirroring
+    This class drives the Kinesis .NET assemblies directly via ``pythonnet``, mirroring
     :class:`instruments.precisionpiezo.PrecisionPiezoCT1P`.
 
     Windows only: requires **Kinesis** to be installed (default
@@ -23,8 +19,7 @@ class KinesisMotor:
     (``27`` -> KCube DC Servo, ``55`` -> K10CR1 cage rotator). The Kinesis .NET API
     then auto-detects the physical stage attached (e.g. Z925B) and reports/accepts
     positions directly in real-world units -- **mm** for linear stages, **deg** for
-    rotary stages (:attr:`units`). No scale/unit bookkeeping is needed on top of that
-    (unlike the old pylablib wrapper).
+    rotary stages (:attr:`units`). No scale/unit bookkeeping is needed on top of that.
 
     ``motor_type`` is accepted for backwards compatibility with existing call sites
     but is otherwise unused -- the .NET API needs no hint to identify the stage.
@@ -149,9 +144,8 @@ class KinesisMotor:
     def wait_move(self):
         """No-op: :meth:`move_to`/:meth:`move_by` already block until the move completes.
 
-        Kept for compatibility with code written against the old pylablib-backed
-        wrapper (e.g. :func:`instruments.camera.utils.autofocus`), where ``move_to``
-        was non-blocking and required an explicit ``wait_move()`` afterwards.
+        Kept so callers that issue a move and then unconditionally call ``wait_move()``
+        (e.g. :func:`instruments.camera.utils.autofocus`) keep working.
         """
 
     def set_velocity(self, max_velocity: float = None, acceleration: float = None):
@@ -171,8 +165,8 @@ class KinesisMotor:
 
     def setup_limit_switch(self, **kwargs):
         """No-op: the Kinesis .NET API homes rotary stages natively, so no limit-switch
-        configuration is needed (unlike the old pylablib wrapper). Kept as a no-op for
-        backwards compatibility with existing call sites."""
+        configuration is needed. Kept as a no-op for backwards compatibility with existing
+        call sites."""
 
     def stop(self):
         self._device.StopImmediate()

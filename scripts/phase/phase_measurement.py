@@ -6,7 +6,7 @@ from pathlib import Path
 import contextlib
 import time
 from typing import Tuple
-import datetime
+from datetime import datetime
 from dataclasses import asdict
 
 import instruments.config
@@ -22,8 +22,12 @@ NUM_PIEZO_STEPS = 15
 PIEZO_STEP = 0.1 #V
 NUM_AVERAGES = 5
 EXPOSURE_MS = 200
-REFERENCE_X_POS = 10.0 # mm
-REFERENCE_Y_POS = 10.0 # mm
+REFERENCE_X_BY = 0.0 # mm
+REFERENCE_Y_BY = 1.0 # mm
+IMAGE_SHAPE_X0 = 1100
+IMAGE_SHAPE_Y0 = 400
+IMAGE_SHAPE_X1 = 2800
+IMAGE_SHAPE_Y1 = 1800
 
 CONFIG_ROOT = Path(instruments.config.__file__).resolve().parent
 
@@ -44,14 +48,15 @@ def get_phase(camera: Camera,
     init_voltage = piezo.get_voltage()
     
     images = []
-    for step in num_piezo_steps:
+    for step in range(num_piezo_steps):
         piezo.set_voltage(init_voltage + piezo_step*step)
-        images.append(camera.get_image()[...,0])
+        images.append(camera.get_image()[IMAGE_SHAPE_Y0:IMAGE_SHAPE_Y1, 
+                                         IMAGE_SHAPE_X0:IMAGE_SHAPE_X1, 0])
         
     images = np.asarray(images)
     piezo.set_voltage(init_voltage)
     
-    res = aia(images, gain="auto")
+    res = aia(images, gain="auto", iters=60)
     print(f"Converged: {res.converged}")
     print(f"Kappa_p: {res.kappa_p}")
     print(f"Kappa_ps: {res.kappa_ps}")
@@ -65,7 +70,7 @@ def measure_phase(camera: Camera,
                   num_averages: int) -> Tuple[np.ndarray, np.ndarray]:
     phi = []
     b = []
-    for num in num_averages:
+    for num in range(num_averages):
         _, sample_b, sample_phi = get_phase(camera, piezo, piezo_step, num_piezo_steps)
         b.append(sample_b)
         phi.append(sample_phi)
@@ -97,12 +102,13 @@ def main():
 
         init_x_pos = stage_x.get_position()
         init_y_pos = stage_y.get_position()
+        start = time.time()
         with _armed_camera(camera):
             sample_phi, sample_mean_resultant = measure_phase(camera, piezo, 
                                                             PIEZO_STEP, NUM_PIEZO_STEPS, 
                                                             NUM_AVERAGES)
-            stage_x.move_to(REFERENCE_X_POS)
-            stage_y.move_to(REFERENCE_Y_POS)
+            stage_x.move_by(REFERENCE_X_BY)
+            stage_y.move_by(REFERENCE_Y_BY)
             
             reference_phi, _ = measure_phase(camera, piezo, 
                                             PIEZO_STEP, NUM_PIEZO_STEPS, 
@@ -114,7 +120,8 @@ def main():
     diff = subtract_reference(sample_phi, reference_phi, sample_mean_resultant)
     carrier_res = remove_carrier(diff.phi, sample_mean_resultant,
                                 defocus=True, refine_iters=10, n_blocks=10)
-    
+    end = time.time()
+    print(f"Phase measurement completed in {end-start:.2f} seconds")
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     save_path = Path(__file__).resolve().parent / f"phase_measurement_{timestamp}.npz"
     np.savez(save_path, **asdict(carrier_res))

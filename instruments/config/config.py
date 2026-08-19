@@ -31,6 +31,8 @@ class EquipmentConfig:
     """Serial number string of the Thorlabs Kinesis polarizer rotation stage."""
     piezo_serial: str = ""
     """Serial number string of the CT1P (IntegratedPrecisionPiezo) controller."""
+    kim_serial: str = ""
+    """Serial number string of the KIM101 inertial piezo motor controller."""
     powermeter_serial: str = ""
     """Serial number string of the Thorlabs power meter."""
     spectrometer_serial: str = ""
@@ -75,6 +77,10 @@ class EquipmentConfig:
     """Polarizer motor max velocity (deg/s). ``None`` skips."""
     default_polarizer_acceleration: float | None = None
     """Polarizer motor acceleration (deg/s²). ``None`` skips."""
+
+    # ── Piezo inertial motor (KIM101) ────────────────────────────────────────
+    kim_channel: int = 4
+    """KIM101 channel (1-4) the PIAK10 actuator is wired to."""
 
     # ── Filter wheel ──────────────────────────────────────────────────────────
     filterwheel_timeout: int = 2000
