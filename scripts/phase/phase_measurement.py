@@ -10,24 +10,30 @@ from datetime import datetime
 from dataclasses import asdict
 
 import instruments.config
-from instruments.pypcocam import PcoCamera
 from instruments.camera import Camera, open_camera
 from instruments.kinesismotor import KinesisMotor
-from instruments.precisionpiezo import PrecisionPiezoCT1P
+from instruments.inertialpiezo import KIM101, KIM101Axis
 from instruments.config import EquipmentConfig
 from phase import aia, remove_carrier, subtract_reference
 from phase.combine import combine_acquisitions
 
-NUM_PIEZO_STEPS = 15
-PIEZO_STEP = 0.1 #V
+NUM_PIEZO_STEPS = 10
+STEP_SIZE = 5  
+SETTLE_S = 0.1  # pause after each step before capturing (mechanical settling)
+
+DRIVE_STEP_RATE = 100          # steps/s
+DRIVE_STEP_ACCELERATION = 500 # steps/s^2
+DRIVE_MAX_VOLTAGE = 125       # V
+
 NUM_AVERAGES = 5
 EXPOSURE_MS = 200
+GAIN = 100
 REFERENCE_X_BY = 0.0 # mm
-REFERENCE_Y_BY = 1.0 # mm
-IMAGE_SHAPE_X0 = 1100
+REFERENCE_Y_BY = -2.0 # mm
+IMAGE_SHAPE_X0 = 300
 IMAGE_SHAPE_Y0 = 400
-IMAGE_SHAPE_X1 = 2800
-IMAGE_SHAPE_Y1 = 1800
+IMAGE_SHAPE_X1 = 3400
+IMAGE_SHAPE_Y1 = 2500
 
 CONFIG_ROOT = Path(instruments.config.__file__).resolve().parent
 
@@ -40,22 +46,24 @@ def _armed_camera(camera):
     finally:
         camera.disarm()
         
-def get_phase(camera: Camera, 
-              piezo: PrecisionPiezoCT1P,
-              piezo_step: float,
+def get_phase(camera: Camera,
+              piezo: KIM101Axis,
+              step_size: int,
               num_piezo_steps: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    
-    init_voltage = piezo.get_voltage()
-    
+
+    init_position = piezo.get_position()
+
     images = []
     for step in range(num_piezo_steps):
-        piezo.set_voltage(init_voltage + piezo_step*step)
-        images.append(camera.get_image()[IMAGE_SHAPE_Y0:IMAGE_SHAPE_Y1, 
+        images.append(camera.get_image()[IMAGE_SHAPE_Y0:IMAGE_SHAPE_Y1,
                                          IMAGE_SHAPE_X0:IMAGE_SHAPE_X1, 0])
-        
+        if step < num_piezo_steps - 1:
+            piezo.move_by(step_size)
+            time.sleep(SETTLE_S)
+
     images = np.asarray(images)
-    piezo.set_voltage(init_voltage)
-    
+    piezo.move_to(init_position)
+
     res = aia(images, gain="auto", iters=60)
     print(f"Converged: {res.converged}")
     print(f"Kappa_p: {res.kappa_p}")
@@ -63,15 +71,15 @@ def get_phase(camera: Camera,
     
     return res.a, res.b, res.phi
 
-def measure_phase(camera: Camera, 
-                  piezo: PrecisionPiezoCT1P,
-                  piezo_step: float,
+def measure_phase(camera: Camera,
+                  piezo: KIM101Axis,
+                  step_size: int,
                   num_piezo_steps: int,
                   num_averages: int) -> Tuple[np.ndarray, np.ndarray]:
     phi = []
     b = []
     for num in range(num_averages):
-        _, sample_b, sample_phi = get_phase(camera, piezo, piezo_step, num_piezo_steps)
+        _, sample_b, sample_phi = get_phase(camera, piezo, step_size, num_piezo_steps)
         b.append(sample_b)
         phi.append(sample_phi)
         
@@ -87,14 +95,23 @@ def main():
     
     with contextlib.ExitStack() as stack:
         # Init devices
-        camera = stack.enter_context(PcoCamera(cfg.camera_serial))
-        piezo = stack.enter_context(PrecisionPiezoCT1P(cfg.piezo_serial))
+        camera = open_camera(cfg, stack)
+        stack.enter_context(camera)
+        kim = stack.enter_context(KIM101(cfg.kim_serial))
+        piezo = kim.axis(cfg.kim_channel)
         stage_x = stack.enter_context(KinesisMotor(cfg.stage_x_serial))
         stage_y = stack.enter_context(KinesisMotor(cfg.stage_y_serial))
 
         # Set settings
         camera.set_exposure_ms(EXPOSURE_MS)
-        piezo.set_open_loop()
+        if camera.supports_gain:
+            camera.set_gain(GAIN)
+        piezo.set_drive_parameters(
+            step_rate=DRIVE_STEP_RATE,
+            step_acceleration=DRIVE_STEP_ACCELERATION,
+            max_voltage=DRIVE_MAX_VOLTAGE,
+        )
+        print(f"Drive parameters applied: {piezo.get_drive_parameters()}")
         stage_x.set_velocity(max_velocity=cfg.default_stage_max_velocity,
                             acceleration=cfg.default_stage_acceleration)
         stage_y.set_velocity(max_velocity=cfg.default_stage_max_velocity,
@@ -105,13 +122,13 @@ def main():
         start = time.time()
         with _armed_camera(camera):
             sample_phi, sample_mean_resultant = measure_phase(camera, piezo, 
-                                                            PIEZO_STEP, NUM_PIEZO_STEPS, 
+                                                            STEP_SIZE, NUM_PIEZO_STEPS,
                                                             NUM_AVERAGES)
             stage_x.move_by(REFERENCE_X_BY)
             stage_y.move_by(REFERENCE_Y_BY)
             
             reference_phi, _ = measure_phase(camera, piezo, 
-                                            PIEZO_STEP, NUM_PIEZO_STEPS, 
+                                            STEP_SIZE, NUM_PIEZO_STEPS,
                                             NUM_AVERAGES)
 
         stage_x.move_to(init_x_pos)

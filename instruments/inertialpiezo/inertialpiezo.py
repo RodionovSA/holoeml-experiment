@@ -273,18 +273,35 @@ class KIM101Axis:
     def move_to(self, position: int, timeout: float = 30.0) -> None:
         """Move to an absolute position in steps. Blocks until reached.
 
+        A no-op if already at ``position`` -- Kinesis's ``MoveTo`` blocks on an
+        internal move-complete signal that a zero-delta move never fires, so
+        issuing it anyway would hang for the full ``timeout`` and raise
+        ``MoveTimeoutException`` instead of returning immediately.
+
         Args:
             position: Target position in inertial steps (signed 32-bit).
             timeout: Maximum time to wait for the move to complete (seconds).
         """
         kim = self._require_open()
-        kim._move_to(self._net_channel, int(position), int(timeout * 1000))
+        position = int(position)
+        if position == self.get_position():
+            print(f"KIM101 {self.serial} ch{self.channel} already at {position} steps; no move needed")
+            return
+        kim._move_to(self._net_channel, position, int(timeout * 1000))
         print(f"KIM101 {self.serial} ch{self.channel} moved to {position} steps")
 
     def move_by(self, steps: int, timeout: float = 30.0) -> None:
-        """Move by a relative offset in steps. Blocks until reached."""
+        """Move by a relative offset in steps. Blocks until reached.
+
+        A no-op for ``steps == 0`` -- see :meth:`move_to` for why a zero-delta
+        move must be skipped rather than issued to the controller.
+        """
         kim = self._require_open()
-        kim._move_by(self._net_channel, int(steps), int(timeout * 1000))
+        steps = int(steps)
+        if steps == 0:
+            print(f"KIM101 {self.serial} ch{self.channel} move_by(0); no move needed")
+            return
+        kim._move_by(self._net_channel, steps, int(timeout * 1000))
         print(f"KIM101 {self.serial} ch{self.channel} moved by {steps} steps")
 
     def jog(self, direction: str, timeout: float = 30.0) -> None:
