@@ -4,6 +4,7 @@ import numpy as np
 import argparse
 from pathlib import Path
 import contextlib
+import concurrent.futures
 import time
 from typing import Tuple
 from datetime import datetime
@@ -15,6 +16,7 @@ from instruments.kinesismotor import KinesisMotor
 from instruments.inertialpiezo import KIM101, KIM101Axis
 from instruments.config import EquipmentConfig
 from phase import aia, remove_carrier, subtract_reference
+from phase.backend import asnumpy
 from phase.combine import combine_acquisitions
 
 NUM_PIEZO_STEPS = 20
@@ -48,11 +50,17 @@ def _armed_camera(camera):
     finally:
         camera.disarm()
         
-def get_phase(camera: Camera,
-              piezo: KIM101Axis,
-              step_size: int,
-              num_piezo_steps: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-
+def _acquire_repeat(camera: Camera,
+                     piezo: KIM101Axis,
+                     step_size: int,
+                     num_piezo_steps: int) -> np.ndarray:
+    """One phase-shift sweep's worth of hardware I/O for a single repeat:
+    dry-run backlash compensation, the frame-capture loop, dry-run back, and
+    return to the start position. Kept on the caller's thread -- the
+    piezo/camera driver calls aren't meant to be used concurrently -- while
+    `measure_phase` overlaps this with the (CPU/GPU-bound) `aia` solve of
+    the *previous* repeat in a background thread instead.
+    """
     # dry piezo run forward
     for i in range(DRY_NUM):
         piezo.move_by(DRY_STEP)
@@ -76,36 +84,67 @@ def get_phase(camera: Camera,
         time.sleep(SETTLE_S)
 
     piezo.move_to(init_position)
+    return images
 
-    res = aia(images, gain="auto", iters=60)
+def _process_repeat(images: np.ndarray, device: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Run AIA on one repeat's frame stack. Meant to be submitted to a
+    background thread (see `measure_phase`) so it overlaps with the next
+    repeat's hardware acquisition rather than leaving the piezo/camera idle
+    for the whole solve."""
+    res = aia(images, gain="auto", iters=60, device=device)
     print(f"Converged: {res.converged}")
     print(f"Kappa_p: {res.kappa_p}")
     print(f"Kappa_ps: {res.kappa_ps}")
-    
     return res.a, res.b, res.phi
 
 def measure_phase(camera: Camera,
                   piezo: KIM101Axis,
                   step_size: int,
                   num_piezo_steps: int,
-                  num_averages: int) -> Tuple[np.ndarray, np.ndarray]:
-    phi = []
-    b = []
-    for num in range(num_averages):
-        _, sample_b, sample_phi = get_phase(camera, piezo, step_size, num_piezo_steps)
-        b.append(sample_b)
-        phi.append(sample_phi)
-        
-    b = np.asarray(b)
-    phi = np.asarray(phi)
-    
-    res = combine_acquisitions(phi, weights=b)
-    
+                  num_averages: int,
+                  device: str = "auto") -> Tuple[np.ndarray, np.ndarray]:
+    """Acquire `num_averages` independent repeats and combine their AIA phase.
+
+    Each repeat's `aia` solve (`_process_repeat`) runs in a background
+    thread while the *next* repeat's dry-run + sweep (`_acquire_repeat`)
+    proceeds on this thread, instead of the piezo/camera sitting idle for
+    the whole solve. A single-worker pool is enough since only one solve is
+    ever in flight; with `device="cuda"` that solve becomes fast enough to
+    mostly hide behind the ~(2*DRY_NUM + num_piezo_steps)*SETTLE_S seconds
+    of hardware time each repeat already takes.
+    """
+    phi_list, b_list = [], []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        pending = None
+        for _ in range(num_averages):
+            images = _acquire_repeat(camera, piezo, step_size, num_piezo_steps)
+            if pending is not None:
+                _, prev_b, prev_phi = pending.result()
+                b_list.append(prev_b)
+                phi_list.append(prev_phi)
+            pending = pool.submit(_process_repeat, images, device)
+        _, last_b, last_phi = pending.result()
+        b_list.append(last_b)
+        phi_list.append(last_phi)
+
+    b = np.asarray([asnumpy(x) for x in b_list])
+    phi = np.asarray([asnumpy(x) for x in phi_list])
+
+    res = combine_acquisitions(phi, weights=b, device=device)
+
     return res.phi, res.mean_resultant
         
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"],
+                        help="Where to run the AIA/carrier/reference solves "
+                             "(see phase.backend) -- 'auto' uses a GPU if one "
+                             "is installed and available, else the CPU.")
+    args = parser.parse_args()
+    device = args.device
+
     cfg = EquipmentConfig.from_yaml(CONFIG_ROOT / "config.yaml")
-    
+
     with contextlib.ExitStack() as stack:
         # Init devices
         camera = open_camera(cfg, stack)
@@ -134,27 +173,32 @@ def main():
         init_y_pos = stage_y.get_position()
         start = time.time()
         with _armed_camera(camera):
-            sample_phi, sample_mean_resultant = measure_phase(camera, piezo, 
+            sample_phi, sample_mean_resultant = measure_phase(camera, piezo,
                                                             STEP_SIZE, NUM_PIEZO_STEPS,
-                                                            NUM_AVERAGES)
+                                                            NUM_AVERAGES, device=device)
             stage_x.move_by(REFERENCE_X_BY)
             stage_y.move_by(REFERENCE_Y_BY)
-            
-            reference_phi, _ = measure_phase(camera, piezo, 
+
+            reference_phi, _ = measure_phase(camera, piezo,
                                             STEP_SIZE, NUM_PIEZO_STEPS,
-                                            NUM_AVERAGES)
+                                            NUM_AVERAGES, device=device)
 
         stage_x.move_to(init_x_pos)
         stage_y.move_to(init_y_pos)
-        
-    diff = subtract_reference(sample_phi, reference_phi, sample_mean_resultant)
+
+    diff = subtract_reference(sample_phi, reference_phi, sample_mean_resultant, device=device)
     carrier_res = remove_carrier(diff.phi, sample_mean_resultant,
-                                defocus=True, refine_iters=10, n_blocks=10)
+                                defocus=True, refine_iters=10, n_blocks=10, device=device)
     end = time.time()
     print(f"Phase measurement completed in {end-start:.2f} seconds")
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     save_path = Path(__file__).resolve().parent / f"phase_measurement_{timestamp}.npz"
-    np.savez(save_path, **asdict(carrier_res))
+    # bring the one array-valued field back to the host explicitly -- np.savez
+    # can't serialize a cupy array, and dataclasses.asdict won't do that
+    # transfer on its own.
+    out = asdict(carrier_res)
+    out["phi"] = asnumpy(out["phi"])
+    np.savez(save_path, **out)
     print(f"Saved measurement -> {save_path}")
 
 if __name__ == "__main__":
