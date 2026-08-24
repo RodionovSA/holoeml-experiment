@@ -17,23 +17,25 @@ from instruments.config import EquipmentConfig
 from phase import aia, remove_carrier, subtract_reference
 from phase.combine import combine_acquisitions
 
-NUM_PIEZO_STEPS = 10
+NUM_PIEZO_STEPS = 20
 STEP_SIZE = 5  
 SETTLE_S = 0.1  # pause after each step before capturing (mechanical settling)
+DRY_NUM = 10
+DRY_STEP = 1
 
-DRIVE_STEP_RATE = 100          # steps/s
+DRIVE_STEP_RATE = 200          # steps/s
 DRIVE_STEP_ACCELERATION = 500 # steps/s^2
 DRIVE_MAX_VOLTAGE = 125       # V
 
-NUM_AVERAGES = 5
-EXPOSURE_MS = 200
+NUM_AVERAGES = 3
+EXPOSURE_MS = 250
 GAIN = 100
 REFERENCE_X_BY = 0.0 # mm
-REFERENCE_Y_BY = -2.0 # mm
-IMAGE_SHAPE_X0 = 300
-IMAGE_SHAPE_Y0 = 400
-IMAGE_SHAPE_X1 = 3400
-IMAGE_SHAPE_Y1 = 2500
+REFERENCE_Y_BY = 0.8 # mm
+IMAGE_SHAPE_X0 = 300 
+IMAGE_SHAPE_Y0 = 400 
+IMAGE_SHAPE_X1 = 3600 
+IMAGE_SHAPE_Y1 = 2600 
 
 CONFIG_ROOT = Path(instruments.config.__file__).resolve().parent
 
@@ -51,6 +53,11 @@ def get_phase(camera: Camera,
               step_size: int,
               num_piezo_steps: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
 
+    # dry piezo run forward
+    for i in range(DRY_NUM):
+        piezo.move_by(DRY_STEP)
+        time.sleep(SETTLE_S)
+
     init_position = piezo.get_position()
 
     images = []
@@ -62,6 +69,12 @@ def get_phase(camera: Camera,
             time.sleep(SETTLE_S)
 
     images = np.asarray(images)
+
+    # dry piezo run backward
+    for i in range(DRY_NUM):
+        piezo.move_by(-DRY_STEP)
+        time.sleep(SETTLE_S)
+
     piezo.move_to(init_position)
 
     res = aia(images, gain="auto", iters=60)
