@@ -85,12 +85,55 @@ see below) to pick up dependency changes.
    ```powershell
    uv sync --extra hardware
    ```
+   Add `--extra cuda` if you want `phase_measurement.py`'s AIA/carrier/reference
+   solves to run on the GPU (see [GPU / CuPy](#gpu--cupy) below):
+   ```powershell
+   uv sync --extra hardware --extra cuda
+   ```
 3. If you've changed `pyproject.toml`, regenerate the lock here (this is the
    only kind of machine that can, since it has the camera SDK zip locally):
    ```powershell
    uv lock
    ```
    Commit the updated `uv.lock` so non-hardware machines pick up the change.
+
+### GPU / CuPy
+
+`holoeml-processing` uses [CuPy](https://cupy.dev/) for the `--device cuda`
+path in `scripts/phase/phase_measurement.py`. It's a large speedup: the AIA
+solve at the measurement ROI (20 frames, 2200×3300) drops from ~21 s on CPU to
+~3 s steady-state on the lab's Quadro K2200. CuPy is pulled in only via the
+`cuda` extra (`uv sync --extra hardware --extra cuda`) — a plain sync doesn't
+install it.
+
+Note `device="auto"` (the script's default) picks CuPy whenever it's
+*importable*, not whenever a working GPU is actually reachable — so on a
+machine with the `cuda` extra installed but no working CUDA Toolkit, `auto`
+fails the same way `--device cuda` does, it does not fall back to CPU. Use
+`--device cpu` explicitly if you need to force CPU on such a machine.
+
+**Requirements (Windows):** the `cupy-cuda12x` wheel does **not** bundle the
+CUDA runtime libraries (`cudart`, `cublas`, `curand`, ...) the way the Linux
+wheel does — it needs a full
+[NVIDIA CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) installed
+separately from the display driver. **CUDA 12.x**, not 13.x — CUDA 13 dropped
+Maxwell/Pascal/Volta support, and the K2200 is Maxwell (compute capability
+5.0) even though its driver advertises CUDA 13.0 as a maximum. Toolkit v12.8
+is confirmed working on the lab machine.
+
+After installing the Toolkit, **restart your terminal** — it sets
+`CUDA_PATH` and adds the Toolkit's `bin/` to `PATH`, which an already-open
+shell won't pick up. If you skip this (or the Toolkit isn't installed),
+`import cupy` still succeeds but any GPU call fails with
+`DynamicLibNotFoundError` / `DLL load failed while importing curand`.
+
+Verify with a fresh terminal:
+
+```powershell
+uv run --frozen python -c "import cupy as cp; a = cp.random.rand(100, 100, dtype=cp.float32); print(float((a @ a).sum()), cp.cuda.Device(0).compute_capability)"
+```
+
+Expect a number and `50` (the K2200's compute capability), no traceback.
 
 ---
 

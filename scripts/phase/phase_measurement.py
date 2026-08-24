@@ -16,7 +16,7 @@ from instruments.kinesismotor import KinesisMotor
 from instruments.inertialpiezo import KIM101, KIM101Axis
 from instruments.config import EquipmentConfig
 from phase import aia, remove_carrier, subtract_reference
-from phase.backend import asnumpy
+from phase.backend import asnumpy, CUPY_AVAILABLE
 from phase.combine import combine_acquisitions
 
 NUM_PIEZO_STEPS = 20
@@ -86,6 +86,19 @@ def _acquire_repeat(camera: Camera,
     piezo.move_to(init_position)
     return images
 
+def _release_gpu_memory():
+    """Return CuPy's pooled (cached, not live) VRAM to the driver.
+
+    The K2200 also drives the display, and its allocator pool plateaus around
+    2.9 of the card's 4 GB across repeated AIA solves. Called once per
+    `measure_phase`, after results are already copied to the host -- the next
+    solve just re-allocates, hidden behind the ~9 s of hardware time per
+    repeat.
+    """
+    if CUPY_AVAILABLE:
+        import cupy as cp
+        cp.get_default_memory_pool().free_all_blocks()
+
 def _process_repeat(images: np.ndarray, device: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Run AIA on one repeat's frame stack. Meant to be submitted to a
     background thread (see `measure_phase`) so it overlaps with the next
@@ -129,6 +142,9 @@ def measure_phase(camera: Camera,
 
     b = np.asarray([asnumpy(x) for x in b_list])
     phi = np.asarray([asnumpy(x) for x in phi_list])
+    b_list.clear()
+    phi_list.clear()
+    _release_gpu_memory()
 
     res = combine_acquisitions(phi, weights=b, device=device)
 
