@@ -56,12 +56,15 @@ def _acquire_repeat(camera: Camera,
                      piezo: KIM101Axis,
                      step_size: int,
                      num_piezo_steps: int) -> np.ndarray:
-    """One phase-shift sweep's worth of hardware I/O for a single repeat:
-    dry-run backlash compensation, the frame-capture loop, dry-run back, and
-    return to the start position. Kept on the caller's thread -- the
-    piezo/camera driver calls aren't meant to be used concurrently -- while
-    `measure_phase` overlaps this with the (CPU/GPU-bound) `aia` solve of
-    the *previous* repeat in a background thread instead.
+    """One phase-shift sweep's worth of hardware I/O for a single repeat: the
+    frame-capture loop, stepping the piezo by `step_size` between frames
+    (`step_size` may be negative -- see `measure_phase`'s `direction`). Dry-
+    run backlash compensation and any position restoration are the caller's
+    responsibility (`measure_phase`/`_run_once`), not this function's. Kept
+    on the caller's thread -- the piezo/camera driver calls aren't meant to
+    be used concurrently -- while `measure_phase` overlaps this with the
+    (CPU/GPU-bound) `aia` solve of the *previous* repeat in a background
+    thread instead.
     """
 
     images = []
@@ -105,26 +108,39 @@ def measure_phase(camera: Camera,
                   step_size: int,
                   num_piezo_steps: int,
                   num_averages: int,
-                  device: str = "auto") -> Tuple[CombinedResult, np.ndarray, np.ndarray, np.ndarray]:
+                  device: str = "auto",
+                  direction: int = 1) -> Tuple[CombinedResult, np.ndarray, np.ndarray, np.ndarray]:
     """Acquire `num_averages` independent repeats and combine their AIA phase.
 
     Each repeat's `aia` solve (`_process_repeat`) runs in a background
-    thread while the *next* repeat's dry-run + sweep (`_acquire_repeat`)
-    proceeds on this thread, instead of the piezo/camera sitting idle for
-    the whole solve. A single-worker pool is enough since only one solve is
-    ever in flight; with `device="cuda"` that solve becomes fast enough to
-    mostly hide behind the ~(2*DRY_NUM + num_piezo_steps)*SETTLE_S seconds
-    of hardware time each repeat already takes.
+    thread while the *next* repeat's sweep (`_acquire_repeat`) proceeds on
+    this thread, instead of the piezo/camera sitting idle for the whole
+    solve. A single-worker pool is enough since only one solve is ever in
+    flight; with `device="cuda"` that solve becomes fast enough to mostly
+    hide behind the ~(num_piezo_steps-1)*SETTLE_S seconds of hardware time
+    each repeat's sweep already takes. The one-time leading dry run (see
+    `direction` below) is not overlapped -- it runs before the first
+    repeat's acquisition starts.
+
+    `direction` (+1 or -1) sets which way the piezo sweeps -- AIA solves for
+    arbitrary unknown phase steps and doesn't care about sweep direction, so
+    `_run_once` uses this to sweep the sample forward and the reference
+    backward, making the *commanded* net travel over one full sample+
+    reference run exactly zero without any dedicated return move (see
+    `_run_once`). This function no longer restores its own start position --
+    the caller is responsible for that (and for verifying it), since only the
+    caller knows the balancing direction of the other half of the pair.
 
     Returns the combined-repeat result alongside the per-repeat AIA
     diagnostics (`converged`, `kappa_p`, `kappa_ps`), each shape
     `(num_averages,)`, so callers can judge whether `num_piezo_steps` was
     high enough for every repeat to actually converge.
     """
+    signed_step = direction * step_size
 
-    # dry piezo run forward
+    # dry piezo run, same direction as the sweep that follows
     for _ in range(DRY_NUM):
-        piezo.move_by(DRY_STEP)
+        piezo.move_by(direction * DRY_STEP)
         time.sleep(SETTLE_S)
 
     phi_list, b_list = [], []
@@ -132,7 +148,7 @@ def measure_phase(camera: Camera,
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         pending = None
         for _ in range(num_averages):
-            images = _acquire_repeat(camera, piezo, step_size, num_piezo_steps)
+            images = _acquire_repeat(camera, piezo, signed_step, num_piezo_steps)
             if pending is not None:
                 _, prev_b, prev_phi, prev_conv, prev_kp, prev_kps = pending.result()
                 b_list.append(prev_b)
@@ -158,16 +174,6 @@ def measure_phase(camera: Camera,
     if res.sign_flips:
         print(f"Sign flips among repeats: {res.sign_flips}")
 
-    # dry piezo run backward
-    for _ in range(DRY_NUM):
-        piezo.move_by(-DRY_STEP)
-        time.sleep(SETTLE_S)
-
-    # piezo back with same steps
-    for _ in range(num_piezo_steps*num_averages):
-        piezo.move_by(-step_size)
-        time.sleep(SETTLE_S)
-
     return (res,
             np.asarray(converged_list),
             np.asarray(kappa_p_list),
@@ -181,29 +187,50 @@ def _run_once(camera: Camera,
                num_piezo_steps: int,
                num_averages: int,
                device: str) -> dict:
-    """One full sample+reference measurement: arm the camera, measure the
-    sample, move to the reference position and measure it, move back, then
-    subtract and remove the carrier. Stage positions are read at the start
-    and restored at the end, so repeated calls all start from -- and return
-    to -- the same nominal state.
+    """One full sample+reference measurement: arm the camera, sweep the piezo
+    forward through the sample, move to the reference position and sweep it
+    backward through the reference, then subtract and remove the carrier.
+
+    The sample sweeps `direction=+1` and the reference `direction=-1` (see
+    `measure_phase`), so the *commanded* piezo travel over one full run nets
+    to zero without any dedicated return move -- no bulk "move back" loop is
+    needed or issued. Both piezo and stage positions are read at the start
+    and restored (or, for the piezo, verified already restored) in a
+    `finally`, so a failure partway through still leaves the hardware where
+    it started rather than stranded mid-sweep.
 
     Returns a dict of host-side (numpy, not cupy) values for this one run,
     ready to be stacked across runs and passed to `np.savez`.
     """
+    init_piezo_pos = piezo.get_position()
     init_x_pos = stage_x.get_position()
     init_y_pos = stage_y.get_position()
     start = time.time()
-    with _armed_camera(camera):
-        sample_res, sample_converged, sample_kappa_p, sample_kappa_ps = measure_phase(
-            camera, piezo, step_size, num_piezo_steps, num_averages, device=device)
-        stage_x.move_by(REFERENCE_X_BY)
-        stage_y.move_by(REFERENCE_Y_BY)
+    try:
+        with _armed_camera(camera):
+            sample_res, sample_converged, sample_kappa_p, sample_kappa_ps = measure_phase(
+                camera, piezo, step_size, num_piezo_steps, num_averages,
+                device=device, direction=1)
+            stage_x.move_by(REFERENCE_X_BY)
+            stage_y.move_by(REFERENCE_Y_BY)
 
-        reference_res, reference_converged, reference_kappa_p, reference_kappa_ps = measure_phase(
-            camera, piezo, step_size, num_piezo_steps, num_averages, device=device)
-
-    stage_x.move_to(init_x_pos)
-    stage_y.move_to(init_y_pos)
+            reference_res, reference_converged, reference_kappa_p, reference_kappa_ps = measure_phase(
+                camera, piezo, step_size, num_piezo_steps, num_averages,
+                device=device, direction=-1)
+    finally:
+        # The sample (+) and reference (-) sweeps above are sized to cancel
+        # exactly, so the commanded counter should already be back at
+        # init_piezo_pos -- move_to() is then a free no-op (see
+        # KIM101Axis.move_to). A nonzero delta means the step arithmetic is
+        # out of balance again and is worth flagging immediately rather than
+        # silently accumulating over a long sequence.
+        piezo_delta = piezo.get_position() - init_piezo_pos
+        if piezo_delta != 0:
+            print(f"WARNING: piezo commanded position off by {piezo_delta} "
+                  f"steps after sample+reference sweep; expected 0.")
+        piezo.move_to(init_piezo_pos)
+        stage_x.move_to(init_x_pos)
+        stage_y.move_to(init_y_pos)
 
     # a pixel unreliable in *either* acquisition is unreliable in the
     # difference -- weight both the sign resolution and carrier fit by the
@@ -228,6 +255,10 @@ def _run_once(camera: Camera,
     out["spread_same"] = diff.spread_same
     out["spread_flipped"] = diff.spread_flipped
     out["time"] = end - start
+    # sample/reference sweep directions are fixed (+1/-1, see measure_phase
+    # calls above), so they're recorded once as batch-level settings in
+    # main()'s out dict rather than duplicated per run here.
+    out["piezo_delta"] = piezo_delta
     # within-run (across num_averages repeats) scatter of the sample
     # acquisition, as a single scalar figure of merit -- the per-pixel
     # scatter map itself is not kept, to keep the file size down.
@@ -390,6 +421,7 @@ def main():
         "spread_flipped": np.asarray([r["spread_flipped"] for r in runs]),
         "time": np.asarray([r["time"] for r in runs]),
         "within_run_scatter": np.asarray([r["within_run_scatter"] for r in runs]),
+        "piezo_delta": np.asarray([r["piezo_delta"] for r in runs]),
         "kx": np.asarray([r["kx"] for r in runs]),
         "ky": np.asarray([r["ky"] for r in runs]),
         "fx": np.asarray([r["fx"] for r in runs]),
@@ -408,6 +440,8 @@ def main():
         "settle_s": SETTLE_S,
         "dry_num": DRY_NUM,
         "dry_step": DRY_STEP,
+        "sweep_direction_sample": 1,
+        "sweep_direction_reference": -1,
         "exposure_ms": EXPOSURE_MS,
         "gain": GAIN,
         "device": device,
