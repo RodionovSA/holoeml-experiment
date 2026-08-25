@@ -4,31 +4,41 @@ phase_measurement.py's small phase-shift sweep (STEP_SIZE * (NUM_PIEZO_STEPS-1)
 commanded steps) rides on top of a much coarser, manually-set piezo position that
 keeps the two interferometer arms' optical path lengths matched within the
 source's coherence length -- the "good coherence zone". This script maps out
-that zone directly: it sweeps the KIM101/PIAK10 across a wide range of commanded
-positions, records one frame per position, and computes fringe visibility online
+that zone directly: it sweeps the KIM101/PIAK10 across a range of commanded
+positions, records a frame at intervals, and computes fringe visibility online
 via `phase.measure_frame_visibility` (absolute/comparable across positions,
 unlike `measure_frame_contrast` which is only relative within one stack -- see
 that function's docstring).
 
-The scan runs the sweep in *both* directions (out from -RANGE to +RANGE, then
-back from +RANGE to -RANGE), which turns "is forward/backward movement equal?"
-into a direct, printed number: the difference between the two sweeps' peak
-positions is the reversal dead zone plus any accumulated step-size asymmetry,
-in the same commanded-step units phase_measurement.py works in.
+IMPORTANT -- every commanded move in this script, from the very first to the
+very last, is exactly STEP_SIZE (matching phase_measurement.py's own phase-shift
+step), at the SAME drive parameters (DRIVE_STEP_RATE/DRIVE_STEP_ACCELERATION/
+DRIVE_MAX_VOLTAGE) and SETTLE_S. This is deliberate, not an approximation: a
+slip-stick inertial actuator commanded to move 1000 steps in one burst runs for
+far longer than one commanded to move 5 steps at the same STEP_RATE (which sets
+pulse frequency, not burst duration) -- a different mechanical regime, not just
+"the same actuator going further". A scan built from a big single jump (even
+just to *reach* the scan's start position) would make its own coordinate
+inconsistent with the rest of the data from the first move onward. So there is
+no jump anywhere: the whole trip is one continuous walk in four STEP_SIZE-only
+segments --
 
-IMPORTANT -- every commanded move here is exactly STEP_SIZE (matching
-phase_measurement.py's own phase-shift step), at the SAME drive parameters
-(DRIVE_STEP_RATE/DRIVE_STEP_ACCELERATION/DRIVE_MAX_VOLTAGE) and SETTLE_S. This
-is deliberate, not an approximation: a slip-stick inertial actuator commanded
-to move by 60 steps in one burst runs for ~6x longer than one commanded to move
-by 5 steps at the same STEP_RATE (which sets pulse frequency, not burst
-duration) -- a different mechanical regime, not just "the same actuator going
-further". A scan built from big-step bursts would not reliably describe how
-the actuator behaves under the small steps the real measurement actually uses.
-The actuator here physically walks through every intermediate STEP_SIZE
-position exactly as a real long sweep would; only CAPTURE_STRIDE (how many of
-those positions get a camera capture + visibility measurement) is used to
-bound runtime/dataset size, never the step size itself.
+    approach (0 -> -RANGE) -> outbound (-RANGE -> +RANGE)
+        -> return (+RANGE -> -RANGE) -> retreat (-RANGE -> 0)
+
+-- each preceded by its own DRY_NUM-step dry run in that segment's direction
+(matching phase_measurement.py's own convention of always dry-running before a
+sweep), including before the very last move back to the start position -- that
+move matters as much as any other, since it's what the piezo is actually left at
+before your next real measurement. Only outbound and return (the two full-range
+segments) are used for the peak/FWHM/dead-zone analysis; approach and retreat
+exist to get to and from the scan symmetrically without a jump, but their
+visibility is recorded too (free -- the actuator is moving through those
+positions regardless).
+
+What's used to bound runtime/dataset size is CAPTURE_STRIDE -- how many of the
+STEP_SIZE positions in each segment get a camera capture + visibility
+measurement -- never the step size itself.
 
 Before running: position the piezo at your manually-set good coherence zone
 first (this script scans *around* the current position, symmetric in RANGE).
@@ -46,7 +56,7 @@ import numpy as np
 
 from instruments.camera import Camera, open_camera
 from instruments.config import load_equipment
-from instruments.inertialpiezo import KIM101
+from instruments.inertialpiezo import KIM101, KIM101Axis
 from phase import measure_frame_visibility
 
 # --------------------------------------------------------------------------- #
@@ -60,11 +70,11 @@ KIM_CHANNEL = _EQ.kim_channel
 EXPOSURE_MS = 250.0
 GAIN = 100
 BLACK_LEVEL = 0
-# Small, centered ROI -- one frame per scan point, so this stays fast and the
-# saved file stays small, rather than the full phase_measurement.py ROI.
+# Small, centered ROI -- one frame per captured point, so this stays fast and
+# the saved file stays small, rather than the full phase_measurement.py ROI.
 # Centered on that ROI's midpoint (IMAGE_SHAPE_X0..X1, Y0..Y1 = 300,3600 /
 # 400,2600 there): x_c=1950, y_c=1500.
-ROI = (1694, 1244, 512, 512)  # (x0, y0, w, h) px
+ROI = (300, 400, 1500, 1500)  # (x0, y0, w, h) px
 FRAMES_TO_AVERAGE = 1
 FRAMES_TO_DROP = 0
 OUT_BIT_DEPTH = np.uint16
@@ -78,28 +88,27 @@ DRIVE_MAX_VOLTAGE = 125        # V
 
 # Scan pattern. STEP_SIZE/SETTLE_S MUST match phase_measurement.py's own values
 # exactly (see module docstring) -- this is not a tuning knob for this script.
-# RANGE sizing: phase_measurement.py's sweep is STEP_SIZE=5 * (NUM_PIEZO_STEPS-1)
-# =19 moves = 95 commanded steps, spanning ~one fringe (AIA wants phase spread
-# over 2*pi), i.e. lambda/2 mirror travel -- ~3 nm/step at 550 nm. Coherence
-# length L_c ~ lambda^2/bandwidth, and mirror travel to lose coherence is L_c/2
-# at normal incidence: at a 10 nm monochromator bandwidth, L_c/2 ~ 15 um ~ 5000
-# commanded steps at that rate -- recompute from your actual bandwidth. RANGE
-# below covers that estimate with margin.
-STEP_SIZE = 5        # commanded steps per move -- MUST match phase_measurement.py's STEP_SIZE
-RANGE = 6000          # commanded steps, scanned symmetrically: -RANGE .. +RANGE
-# How many STEP_SIZE moves between captured points. Every move still happens
-# (n_moves = 2*RANGE // STEP_SIZE per direction, unaffected by this) -- only
-# how many of those positions get a camera capture + visibility measurement is
+STEP_SIZE = 5          # commanded steps per move -- MUST match phase_measurement.py's STEP_SIZE
+RANGE = 1000            # commanded steps, scanned symmetrically: -RANGE .. +RANGE.
+# If the peak sits at the edge of the scan (the script warns when this
+# happens), widen RANGE on the *next* run -- don't guess a larger value
+# up front; a wider RANGE costs real move+settle time (see the printed
+# estimate below), all of it genuine, none of it hidden in a big jump.
+# How many STEP_SIZE moves between captured points, within each segment. Every
+# move still happens regardless of this (see module docstring) -- only how
+# many of those positions get a camera capture + visibility measurement is
 # reduced, to bound dataset size and capture/exposure time (not move time,
-# which dominates the run and scales with RANGE/STEP_SIZE regardless).
-# Default 12 -> a captured point every STEP_SIZE*12=60 commanded steps, the
-# same spatial sampling density the old (incorrect) COARSE_STEP=60 design had.
-CAPTURE_STRIDE = 12
-SETTLE_S = 0.05       # pause after each move before capturing -- matches phase_measurement.py
-DRY_NUM = 10          # backlash-compensation dry-run steps before each sweep direction
+# which dominates the run and scales with RANGE/STEP_SIZE regardless of this).
+CAPTURE_STRIDE = 4
+SETTLE_S = 0.05         # pause after each move before capturing -- matches phase_measurement.py
+DRY_NUM = 10            # backlash-compensation dry-run steps before each of the 4 segments
 DRY_STEP = 1
 MOVE_TIMEOUT_S = 30.0
-MAX_DATASET_GB = 4.0   # pre-flight abort threshold, sized against captured (not moved) frames
+MAX_DATASET_GB = 4.0    # pre-flight abort threshold, sized against captured (not moved) frames
+
+# Segment codes, saved as scan_segment -- scan_direction alone can't tell
+# approach from return (both -1) or outbound from retreat (both +1).
+SEG_APPROACH, SEG_OUTBOUND, SEG_RETURN, SEG_RETREAT = 0, 1, 2, 3
 
 
 @contextlib.contextmanager
@@ -121,6 +130,64 @@ def _crop(img: np.ndarray, roi: tuple[int, int, int, int] | None) -> np.ndarray:
     if x0 < 0 or y0 < 0 or x0 + w > W or y0 + h > H:
         raise ValueError(f"ROI {roi} does not fit inside frame of shape {(H, W)}")
     return img[y0:y0 + h, x0:x0 + w]
+
+
+def _dry_run(axis: KIM101Axis, direction: int) -> int:
+    """DRY_NUM backlash-compensation steps of DRY_STEP in `direction` (+1/-1),
+    run before every one of the 4 segments (see module docstring) -- including
+    before the final return to the start position, which previous versions of
+    this script skipped. Returns the net commanded delta (direction*DRY_NUM*
+    DRY_STEP) so the caller can keep its own running `commanded` tally exact.
+    """
+    for _ in range(DRY_NUM):
+        axis.move_by(direction * DRY_STEP, timeout=MOVE_TIMEOUT_S)
+        time.sleep(SETTLE_S)
+    return direction * DRY_NUM * DRY_STEP
+
+
+def _sweep_segment(camera: Camera, axis: KIM101Axis, direction: int, n_moves: int,
+                    segment_id: int, label: str, commanded: int, idx: int,
+                    t_start: float, arrays: dict) -> tuple:
+    """Move `n_moves` times by `direction * STEP_SIZE` -- every single one of
+    them, never a bigger jump (see module docstring) -- capturing a frame and
+    computing visibility every `CAPTURE_STRIDE`-th position (including
+    position 0, before this segment's first move) into `arrays`, starting at
+    `idx`. One implementation shared by all 4 segments rather than 4
+    hand-written copies -- duplicated loops are exactly the kind of thing that
+    caused the original step-counting bug in phase_measurement.py.
+
+    Caller is responsible for the leading dry run in `direction` (each segment
+    starts right after a direction reversal -- see `_dry_run`).
+
+    Returns (commanded, idx) updated to their values after this segment.
+    """
+    captured = 0
+    for m in range(n_moves + 1):
+        if m > 0:
+            axis.move_by(direction * STEP_SIZE, timeout=MOVE_TIMEOUT_S)
+            time.sleep(SETTLE_S)
+            commanded += direction * STEP_SIZE
+        if m % CAPTURE_STRIDE != 0:
+            continue
+
+        img = camera.get_image(FRAMES_TO_AVERAGE, FRAMES_TO_DROP)
+        frame = _crop(img, ROI)
+        arrays["images"][idx] = frame
+        arrays["commanded"][idx] = commanded
+        arrays["counter"][idx] = axis.get_position()
+        arrays["direction"][idx] = direction
+        arrays["segment"][idx] = segment_id
+        arrays["visibility"][idx] = float(
+            measure_frame_visibility(frame[None, :, :, 0].astype(np.float32))[0])
+        arrays["times"][idx] = time.monotonic() - t_start
+        idx += 1
+        captured += 1
+
+        if captured % 20 == 0 or m == n_moves:
+            print(f"    [{label}] move {m}/{n_moves} (capture {captured}) -> "
+                  f"commanded {commanded}, visibility {arrays['visibility'][idx - 1]:.5f}")
+
+    return commanded, idx
 
 
 def _estimate_envelope(commanded: np.ndarray, visibility: np.ndarray) -> tuple:
@@ -201,20 +268,26 @@ if __name__ == "__main__":
             _, _, crop_w, crop_h = ROI
             H, W = crop_h, crop_w
 
-        # n_moves is how many times the actuator actually moves, per direction
-        # -- every one of them is a real STEP_SIZE burst. n_capture is how many
-        # of those positions get a camera capture (dataset size depends on
-        # this, not n_moves).
-        n_moves = 2 * RANGE // STEP_SIZE
-        n_capture = n_moves // CAPTURE_STRIDE + 1
-        n_scan = 2 * n_capture
+        # n_moves_* is how many times the actuator actually moves in each
+        # segment -- every one of them is a real STEP_SIZE burst (see module
+        # docstring). n_capture_* is how many of those positions get a camera
+        # capture; dataset size depends on that, not on n_moves_*.
+        n_moves_half = RANGE // STEP_SIZE        # approach, retreat: 0 <-> -RANGE
+        n_moves_full = 2 * RANGE // STEP_SIZE    # outbound, return: -RANGE <-> +RANGE
+        n_capture_half = n_moves_half // CAPTURE_STRIDE + 1
+        n_capture_full = n_moves_full // CAPTURE_STRIDE + 1
+        n_scan = 2 * n_capture_half + 2 * n_capture_full
+        n_moves_total = 2 * n_moves_half + 2 * n_moves_full
+
         bytes_per_frame = H * W * C * np.dtype(OUT_BIT_DEPTH).itemsize
         estimated_gb = n_scan * bytes_per_frame / 1e9
-        est_move_s = 2 * n_moves * (STEP_SIZE / DRIVE_STEP_RATE + SETTLE_S)
-        print(f"Planned scan: {n_scan} captured points ({n_capture} out + {n_capture} "
-              f"return) of {H}x{W}x{C} ({OUT_BIT_DEPTH.__name__}) -> ~{estimated_gb:.2f} GB, "
-              f"from {n_moves} STEP_SIZE={STEP_SIZE} moves per direction "
-              f"(~{est_move_s:.0f}s of move+settle time alone, both directions)")
+        est_move_s = n_moves_total * (STEP_SIZE / DRIVE_STEP_RATE + SETTLE_S)
+        print(f"Planned scan: {n_scan} captured points across 4 segments "
+              f"(approach+outbound+return+retreat) of {H}x{W}x{C} "
+              f"({OUT_BIT_DEPTH.__name__}) -> ~{estimated_gb:.2f} GB, from "
+              f"{n_moves_total} STEP_SIZE={STEP_SIZE} moves total "
+              f"(~{est_move_s:.0f}s of move+settle time alone, everything else "
+              f"-- camera exposure, dry runs -- on top of that)")
         if estimated_gb > MAX_DATASET_GB:
             raise RuntimeError(
                 f"Planned dataset (~{estimated_gb:.2f} GB) exceeds MAX_DATASET_GB "
@@ -227,105 +300,68 @@ if __name__ == "__main__":
         scan_commanded = np.zeros(n_scan, dtype=np.int64)
         scan_counter = np.zeros(n_scan, dtype=np.int64)
         scan_direction = np.zeros(n_scan, dtype=np.int8)
+        scan_segment = np.zeros(n_scan, dtype=np.int8)
         scan_visibility = np.zeros(n_scan, dtype=np.float64)
         scan_times = np.zeros(n_scan, dtype=np.float64)
+        arrays = dict(images=scan_images, commanded=scan_commanded,
+                       counter=scan_counter, direction=scan_direction,
+                       segment=scan_segment, visibility=scan_visibility,
+                       times=scan_times)
 
         idx = 0
+        commanded = 0
         error: Exception | None = None
 
         try:
             with _armed_camera(camera):
-                # ----------------------------------------------------------
-                # 1. One large move to the far (-RANGE) end, then a leading
-                #    dry run in the +1 direction to clear the reversal dead
-                #    zone before the outbound sweep starts recording.
-                # ----------------------------------------------------------
-                print(f"Moving to scan start (commanded {-RANGE}) ...")
-                axis.move_by(-RANGE, timeout=MOVE_TIMEOUT_S)
-                commanded = -RANGE
-                for _ in range(DRY_NUM):
-                    axis.move_by(DRY_STEP, timeout=MOVE_TIMEOUT_S)
-                    time.sleep(SETTLE_S)
-                    commanded += DRY_STEP
+                # Every one of the 4 segments below is preceded by its own
+                # dry run in that segment's direction -- including the last
+                # one, back to the start position (see module docstring: a
+                # previous version of this script skipped that one).
+                commanded += _dry_run(axis, -1)
+                print(f"Approach: {n_moves_half} moves of {STEP_SIZE} steps "
+                      f"to reach the scan start (0 -> {-RANGE}) ...")
+                commanded, idx = _sweep_segment(
+                    camera, axis, -1, n_moves_half, SEG_APPROACH, "approach",
+                    commanded, idx, t_start, arrays)
 
-                # ----------------------------------------------------------
-                # 2. Outbound sweep: -RANGE -> +RANGE. The actuator moves by
-                #    STEP_SIZE on *every* iteration (n_moves total) -- only
-                #    whether this iteration also captures a frame depends on
-                #    CAPTURE_STRIDE. This is what makes the actuator's physical
-                #    history match a real long sweep (see module docstring).
-                # ----------------------------------------------------------
-                print(f"Outbound sweep: {n_moves} moves of {STEP_SIZE} steps, "
-                      f"capturing every {CAPTURE_STRIDE}th ({n_capture} points) ...")
-                captured = 0
-                for m in range(n_moves + 1):
-                    if m > 0:
-                        axis.move_by(STEP_SIZE, timeout=MOVE_TIMEOUT_S)
-                        time.sleep(SETTLE_S)
-                        commanded += STEP_SIZE
-                    if m % CAPTURE_STRIDE != 0:
-                        continue
+                commanded += _dry_run(axis, 1)
+                print(f"Outbound sweep: {n_moves_full} moves, capturing every "
+                      f"{CAPTURE_STRIDE}th ({n_capture_full} points) ...")
+                commanded, idx = _sweep_segment(
+                    camera, axis, 1, n_moves_full, SEG_OUTBOUND, "outbound",
+                    commanded, idx, t_start, arrays)
 
-                    img = camera.get_image(FRAMES_TO_AVERAGE, FRAMES_TO_DROP)
-                    frame = _crop(img, ROI)
-                    scan_images[idx] = frame
-                    scan_commanded[idx] = commanded
-                    scan_counter[idx] = axis.get_position()
-                    scan_direction[idx] = 1
-                    scan_visibility[idx] = float(
-                        measure_frame_visibility(frame[None, :, :, 0].astype(np.float32))[0])
-                    scan_times[idx] = time.monotonic() - t_start
-                    idx += 1
-                    captured += 1
+                commanded += _dry_run(axis, -1)
+                print(f"Return sweep: {n_moves_full} moves, capturing every "
+                      f"{CAPTURE_STRIDE}th ({n_capture_full} points) ...")
+                commanded, idx = _sweep_segment(
+                    camera, axis, -1, n_moves_full, SEG_RETURN, "return",
+                    commanded, idx, t_start, arrays)
 
-                    if captured % 20 == 0 or m == n_moves:
-                        print(f"    move {m}/{n_moves} (capture {captured}/{n_capture}) -> "
-                              f"commanded {commanded}, visibility {scan_visibility[idx - 1]:.5f}")
-
-                # ----------------------------------------------------------
-                # 3. Leading dry run in the -1 direction, then the return
-                #    sweep: +RANGE -> -RANGE, same move-every-time /
-                #    capture-every-CAPTURE_STRIDE-th pattern as the outbound
-                #    sweep.
-                # ----------------------------------------------------------
-                for _ in range(DRY_NUM):
-                    axis.move_by(-DRY_STEP, timeout=MOVE_TIMEOUT_S)
-                    time.sleep(SETTLE_S)
-                    commanded -= DRY_STEP
-
-                print(f"Return sweep: {n_moves} moves of {STEP_SIZE} steps, "
-                      f"capturing every {CAPTURE_STRIDE}th ({n_capture} points) ...")
-                captured = 0
-                for m in range(n_moves + 1):
-                    if m > 0:
-                        axis.move_by(-STEP_SIZE, timeout=MOVE_TIMEOUT_S)
-                        time.sleep(SETTLE_S)
-                        commanded -= STEP_SIZE
-                    if m % CAPTURE_STRIDE != 0:
-                        continue
-
-                    img = camera.get_image(FRAMES_TO_AVERAGE, FRAMES_TO_DROP)
-                    frame = _crop(img, ROI)
-                    scan_images[idx] = frame
-                    scan_commanded[idx] = commanded
-                    scan_counter[idx] = axis.get_position()
-                    scan_direction[idx] = -1
-                    scan_visibility[idx] = float(
-                        measure_frame_visibility(frame[None, :, :, 0].astype(np.float32))[0])
-                    scan_times[idx] = time.monotonic() - t_start
-                    idx += 1
-                    captured += 1
-
-                    if captured % 20 == 0 or m == n_moves:
-                        print(f"    move {m}/{n_moves} (capture {captured}/{n_capture}) -> "
-                              f"commanded {commanded}, visibility {scan_visibility[idx - 1]:.5f}")
+                commanded += _dry_run(axis, 1)
+                print(f"Retreat: {n_moves_half} moves back toward the start ...")
+                commanded, idx = _sweep_segment(
+                    camera, axis, 1, n_moves_half, SEG_RETREAT, "retreat",
+                    commanded, idx, t_start, arrays)
         except Exception as exc:
             error = exc
             print(f"ERROR during acquisition: {exc!r}")
             print(f"Captured {idx}/{n_scan} scan points before the failure -- "
                   f"saving partial data.")
         finally:
-            print("Returning to start position (commanded 0) ...")
+            # The four segments above are sized to cancel exactly (approach
+            # -RANGE, outbound +2*RANGE, return -2*RANGE, retreat +RANGE net
+            # to 0), so by this point the commanded counter should already be
+            # back near 0 -- off only by whatever the four dry runs' own step
+            # count didn't itself cancel (at most 4*DRY_NUM*DRY_STEP=40 steps
+            # at these defaults), not the ~2*RANGE-step gap an unmatched-regime
+            # jump would have left. move_to(0) below is therefore now a small,
+            # honest correction -- not a second instance of the big-jump
+            # problem this revision fixes (see module docstring).
+            residual = axis.get_position()
+            print(f"Returning to start position (commanded 0; residual "
+                  f"{residual} steps from the four dry runs) ...")
             try:
                 axis.move_to(0, timeout=MOVE_TIMEOUT_S)
             except Exception as move_exc:
@@ -339,15 +375,18 @@ if __name__ == "__main__":
     scan_commanded = scan_commanded[:idx]
     scan_counter = scan_counter[:idx]
     scan_direction = scan_direction[:idx]
+    scan_segment = scan_segment[:idx]
     scan_visibility = scan_visibility[:idx]
     scan_times = scan_times[:idx]
 
     # -------------------------------------------------------------------------
     # Envelope analysis: peak position + FWHM per direction, and the
     # forward/backward peak offset (dead zone + accumulated asymmetry).
+    # Restricted to the two full-range segments (scan_direction alone can't
+    # tell outbound from retreat, or approach from return -- scan_segment can).
     # -------------------------------------------------------------------------
-    out_mask = scan_direction == 1
-    ret_mask = scan_direction == -1
+    out_mask = scan_segment == SEG_OUTBOUND
+    ret_mask = scan_segment == SEG_RETURN
     peak_out = fwhm_out = peak_ret = fwhm_ret = float("nan")
     fwd_back_offset = float("nan")
     if out_mask.sum() >= 3:
@@ -379,16 +418,23 @@ if __name__ == "__main__":
         "KIM101/PIAK10 coherence-zone scan: fringe visibility (phase."
         "measure_frame_visibility, absolute/comparable across the whole scan -- "
         "not measure_frame_contrast, which only normalizes within one stack) vs. "
-        "commanded piezo position, swept out (-RANGE -> +RANGE, scan_direction=1) "
-        "then back (scan_direction=-1). Peak position and FWHM per direction, "
-        "plus the forward/backward peak offset (= reversal dead zone + any "
-        "step-size asymmetry, in commanded steps), are computed and printed at "
-        "the end of the run and saved as scalars below. 'scan_counter' is the "
-        "open-loop commanded-step counter (KIM101Axis.get_position()), not a "
-        "position sensor. Use the located peak as the center for a finer re-scan "
-        "(narrower RANGE and/or smaller CAPTURE_STRIDE -- STEP_SIZE stays fixed, "
-        "matching phase_measurement.py), or as the position to manually re-set the "
-        "piezo to before a measurement sequence."
+        "commanded piezo position. Every commanded move in the whole run is "
+        "exactly STEP_SIZE (no jump of any other size, see module docstring), "
+        "in 4 segments identified by 'scan_segment': 0=approach (0->-RANGE), "
+        "1=outbound (-RANGE->+RANGE), 2=return (+RANGE->-RANGE), 3=retreat "
+        "(-RANGE->0). 'scan_direction' is the physical move sign (+1/-1) and "
+        "does not by itself distinguish e.g. approach from return (both -1) -- "
+        "use 'scan_segment' for that. Peak position and FWHM are computed from "
+        "'scan_segment' 1 and 2 only (approach/retreat visibility is recorded "
+        "but not used for the envelope fit); the forward/backward peak offset "
+        "(= reversal dead zone + any step-size asymmetry, in commanded steps) "
+        "is their difference. All are printed and saved as scalars below. "
+        "'scan_counter' is the open-loop commanded-step counter "
+        "(KIM101Axis.get_position()), not a position sensor. Use the located "
+        "peak as the center for a finer re-scan (narrower RANGE and/or smaller "
+        "CAPTURE_STRIDE -- STEP_SIZE stays fixed, matching phase_measurement.py), "
+        "or as the position to manually re-set the piezo to before a measurement "
+        "sequence."
     )
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -399,7 +445,8 @@ if __name__ == "__main__":
         scan_images=scan_images,              # (n_scan, H, W, C)
         scan_commanded=scan_commanded,        # (n_scan,) cumulative commanded steps from start
         scan_counter=scan_counter,            # (n_scan,) axis.get_position() readback
-        scan_direction=scan_direction,        # (n_scan,) +1 outbound / -1 return
+        scan_direction=scan_direction,        # (n_scan,) +1 / -1 physical move sign
+        scan_segment=scan_segment,            # (n_scan,) 0=approach 1=outbound 2=return 3=retreat
         scan_visibility=scan_visibility,      # (n_scan,) phase.measure_frame_visibility
         scan_times=scan_times,                # (n_scan,) s since start
         peak_out=peak_out,
