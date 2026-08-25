@@ -114,7 +114,6 @@ def measure_phase(camera: Camera,
     mostly hide behind the ~(2*DRY_NUM + num_piezo_steps)*SETTLE_S seconds
     of hardware time each repeat already takes.
     """
-    init_position = piezo.get_position()
     
     # dry piezo run forward
     for i in range(DRY_NUM):
@@ -150,7 +149,10 @@ def measure_phase(camera: Camera,
         piezo.move_by(-DRY_STEP)
         time.sleep(SETTLE_S)
 
-    piezo.move_to(init_position)
+    # piezo back with same steps
+    for i in range(num_piezo_steps*num_averages):
+        piezo.move_by(-step_size)
+        time.sleep(SETTLE_S)
 
     return res.phi, res.mean_resultant
         
@@ -160,8 +162,15 @@ def main():
                         help="Where to run the AIA/carrier/reference solves "
                              "(see phase.backend) -- 'auto' uses a GPU if one "
                              "is installed and available, else the CPU.")
+    parser.add_argument("--num_averages", type=int, default=NUM_AVERAGES,
+                        help="Number of independent repeats to acquire and "
+                             "combine per phase measurement.")
+    parser.add_argument("--num_piezo_steps", type=int, default=NUM_PIEZO_STEPS,
+                        help="Number of piezo phase-shift steps per repeat.")
     args = parser.parse_args()
     device = args.device
+    num_averages = args.num_averages
+    num_piezo_steps = args.num_piezo_steps
 
     cfg = EquipmentConfig.from_yaml(CONFIG_ROOT / "config.yaml")
 
@@ -194,14 +203,14 @@ def main():
         start = time.time()
         with _armed_camera(camera):
             sample_phi, sample_mean_resultant = measure_phase(camera, piezo,
-                                                            STEP_SIZE, NUM_PIEZO_STEPS,
-                                                            NUM_AVERAGES, device=device)
+                                                            STEP_SIZE, num_piezo_steps,
+                                                            num_averages, device=device)
             stage_x.move_by(REFERENCE_X_BY)
             stage_y.move_by(REFERENCE_Y_BY)
 
             reference_phi, reference_mean_resultant = measure_phase(camera, piezo,
-                                            STEP_SIZE, NUM_PIEZO_STEPS,
-                                            NUM_AVERAGES, device=device)
+                                            STEP_SIZE, num_piezo_steps,
+                                            num_averages, device=device)
 
         stage_x.move_to(init_x_pos)
         stage_y.move_to(init_y_pos)
@@ -229,6 +238,11 @@ def main():
     out["ambiguous"] = diff.ambiguous
     out["spread_same"] = diff.spread_same
     out["spread_flipped"] = diff.spread_flipped
+    out["time"] = end-start
+    out["exposure_ms"] = EXPOSURE_MS
+    out["gain"] = GAIN
+    out["num_averages"] = num_averages
+    out["num_piezo_steps"] = num_piezo_steps
     np.savez(save_path, **out)
     print(f"Saved measurement -> {save_path}")
 
