@@ -606,7 +606,7 @@ dev = [{ name = "jupyter", specifier = ">=1.1.1" }]
 [[package]]
 name = "holoeml-processing"
 version = "0.1.0"
-source = { git = "https://github.com/RodionovSA/holoeml-processing.git#1620248b4b55c4bc9f328c5d32be36d29ffd38e7" }
+source = { git = "https://github.com/RodionovSA/holoeml-processing.git#774f3fe3a2f9a16c82b937d62c55dee68de7f899" }
 dependencies = [
     { name = "jupyter" },
     { name = "matplotlib" },
