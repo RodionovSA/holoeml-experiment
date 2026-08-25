@@ -21,7 +21,7 @@ from phase.combine import combine_acquisitions
 
 NUM_PIEZO_STEPS = 20
 STEP_SIZE = 5  
-SETTLE_S = 0.1  # pause after each step before capturing (mechanical settling)
+SETTLE_S = 0.05  # pause after each step before capturing (mechanical settling)
 DRY_NUM = 10
 DRY_STEP = 1
 
@@ -29,7 +29,7 @@ DRIVE_STEP_RATE = 200          # steps/s
 DRIVE_STEP_ACCELERATION = 500 # steps/s^2
 DRIVE_MAX_VOLTAGE = 125       # V
 
-NUM_AVERAGES = 3
+NUM_AVERAGES = 2
 EXPOSURE_MS = 250
 GAIN = 100
 REFERENCE_X_BY = 0.0 # mm
