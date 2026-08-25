@@ -86,7 +86,7 @@ DRIVE_MAX_VOLTAGE = 125        # V
 # commanded steps at that rate -- recompute from your actual bandwidth. RANGE
 # below covers that estimate with margin.
 STEP_SIZE = 5        # commanded steps per move -- MUST match phase_measurement.py's STEP_SIZE
-RANGE = 6000          # commanded steps, scanned symmetrically: -RANGE .. +RANGE
+RANGE = 1000          # commanded steps, scanned symmetrically: -RANGE .. +RANGE
 # How many STEP_SIZE moves between captured points. Every move still happens
 # (n_moves = 2*RANGE // STEP_SIZE per direction, unaffected by this) -- only
 # how many of those positions get a camera capture + visibility measurement is
