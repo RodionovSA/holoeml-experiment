@@ -126,7 +126,9 @@ def measure_phase(camera: Camera,
     phi = np.asarray([asnumpy(x) for x in phi_list])
 
     res = combine_acquisitions(phi, weights=b, device=device)
-    
+    if res.sign_flips:
+        print(f"Sign flips among repeats: {res.sign_flips}")
+
     # dry piezo run backward
     for i in range(DRY_NUM):
         piezo.move_by(-DRY_STEP)
@@ -181,15 +183,22 @@ def main():
             stage_x.move_by(REFERENCE_X_BY)
             stage_y.move_by(REFERENCE_Y_BY)
 
-            reference_phi, _ = measure_phase(camera, piezo,
+            reference_phi, reference_mean_resultant = measure_phase(camera, piezo,
                                             STEP_SIZE, NUM_PIEZO_STEPS,
                                             NUM_AVERAGES, device=device)
 
         stage_x.move_to(init_x_pos)
         stage_y.move_to(init_y_pos)
 
-    diff = subtract_reference(sample_phi, reference_phi, sample_mean_resultant, device=device)
-    carrier_res = remove_carrier(diff.phi, sample_mean_resultant,
+    # a pixel unreliable in *either* acquisition is unreliable in the
+    # difference -- weight both the sign resolution and carrier fit by the
+    # joint reliability rather than the sample's alone.
+    weight = sample_mean_resultant * reference_mean_resultant
+
+    diff = subtract_reference(sample_phi, reference_phi, weight, device=device)
+    print(f"Sign branch: sign={diff.sign:+d} ambiguous={diff.ambiguous} "
+          f"spread_same={diff.spread_same:.4f} spread_flipped={diff.spread_flipped:.4f}")
+    carrier_res = remove_carrier(diff.phi, weight,
                                 defocus=True, refine_iters=10, n_blocks=10, device=device)
     end = time.time()
     print(f"Phase measurement completed in {end-start:.2f} seconds")
@@ -200,6 +209,10 @@ def main():
     # transfer on its own.
     out = asdict(carrier_res)
     out["phi"] = asnumpy(out["phi"])
+    out["sign"] = diff.sign
+    out["ambiguous"] = diff.ambiguous
+    out["spread_same"] = diff.spread_same
+    out["spread_flipped"] = diff.spread_flipped
     np.savez(save_path, **out)
     print(f"Saved measurement -> {save_path}")
 
