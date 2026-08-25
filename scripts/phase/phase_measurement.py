@@ -16,7 +16,7 @@ from instruments.kinesismotor import KinesisMotor
 from instruments.inertialpiezo import KIM101, KIM101Axis
 from instruments.config import EquipmentConfig
 from phase import aia, remove_carrier, subtract_reference
-from phase.backend import asnumpy, CUPY_AVAILABLE
+from phase.backend import asnumpy, get_array_module, CUPY_AVAILABLE
 from phase.combine import combine_acquisitions, CombinedResult
 
 NUM_PIEZO_STEPS = 20
@@ -92,16 +92,41 @@ def _release_gpu_memory():
         import cupy as cp
         cp.get_default_memory_pool().free_all_blocks()
 
-def _process_repeat(images: np.ndarray, device: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, bool, float, float]:
+def _process_repeat(images: np.ndarray, device: str) -> Tuple[float, np.ndarray, np.ndarray, bool, float, float, np.ndarray]:
     """Run AIA on one repeat's frame stack. Meant to be submitted to a
     background thread (see `measure_phase`) so it overlaps with the next
     repeat's hardware acquisition rather than leaving the piezo/camera idle
-    for the whole solve."""
+    for the whole solve.
+
+    `I_n = a + g_n*b*cos(phi + delta_n)` (see `aia`'s docstring), so
+    `b/a` *is* fringe visibility, absolutely calibrated -- not just
+    proportional to it. Reduced here to a single scalar
+    (median over illuminated pixels, i.e. excluding unlit background that
+    would otherwise drag the median toward 0, or blow up as an outlier
+    ratio when `a` is near 0) rather than returning the full `a` map,
+    since that's all `measure_phase`/`_run_once` need to log per-repeat
+    contrast for drift monitoring. The threshold is relative to `max(a)`,
+    not `median(a)` -- a median-relative threshold only excludes dark
+    background when illuminated pixels are the *majority* of the frame,
+    which isn't guaranteed for every ROI; max-relative works regardless
+    of what fraction of the frame is lit (verified against synthetic
+    frames from 10% to 90% illuminated area). `res.g`, the per-frame
+    contrast within this one sweep, is returned in full -- it should stay
+    flat; a slope means the sweep itself walked off the coherence envelope
+    mid-acquisition.
+    """
     res = aia(images, gain="auto", iters=60, device=device)
     print(f"Converged: {res.converged}")
     print(f"Kappa_p: {res.kappa_p}")
     print(f"Kappa_ps: {res.kappa_ps}")
-    return res.a, res.b, res.phi, res.converged, res.kappa_p, res.kappa_ps
+    xp = get_array_module(res.a, res.b)
+    lit = res.a > 0.5 * xp.max(res.a)
+    # index before dividing, not after -- res.a can be exactly 0 in masked/
+    # dark corners, and dividing the full arrays first would raise a
+    # spurious divide-by-zero warning for values discarded by `lit` anyway.
+    visibility = float(xp.median(res.b[lit] / res.a[lit])) if bool(xp.any(lit)) else float("nan")
+    print(f"Visibility: {visibility:.4f}")
+    return visibility, res.b, res.phi, res.converged, res.kappa_p, res.kappa_ps, res.g
 
 def measure_phase(camera: Camera,
                   piezo: KIM101Axis,
@@ -109,7 +134,8 @@ def measure_phase(camera: Camera,
                   num_piezo_steps: int,
                   num_averages: int,
                   device: str = "auto",
-                  direction: int = 1) -> Tuple[CombinedResult, np.ndarray, np.ndarray, np.ndarray]:
+                  direction: int = 1) -> Tuple[CombinedResult, np.ndarray, np.ndarray, np.ndarray,
+                                                np.ndarray, np.ndarray]:
     """Acquire `num_averages` independent repeats and combine their AIA phase.
 
     Each repeat's `aia` solve (`_process_repeat`) runs in a background
@@ -132,9 +158,12 @@ def measure_phase(camera: Camera,
     caller knows the balancing direction of the other half of the pair.
 
     Returns the combined-repeat result alongside the per-repeat AIA
-    diagnostics (`converged`, `kappa_p`, `kappa_ps`), each shape
-    `(num_averages,)`, so callers can judge whether `num_piezo_steps` was
-    high enough for every repeat to actually converge.
+    diagnostics (`converged`, `kappa_p`, `kappa_ps`, `visibility`), each
+    shape `(num_averages,)`, so callers can judge whether `num_piezo_steps`
+    was high enough for every repeat to actually converge and whether the
+    setup is still inside its coherence zone. Also returns `g`, shape
+    `(num_averages, num_piezo_steps)`, the per-frame contrast *within* each
+    sweep -- see `_process_repeat`.
     """
     signed_step = direction * step_size
 
@@ -145,24 +174,29 @@ def measure_phase(camera: Camera,
 
     phi_list, b_list = [], []
     converged_list, kappa_p_list, kappa_ps_list = [], [], []
+    visibility_list, g_list = [], []
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         pending = None
         for _ in range(num_averages):
             images = _acquire_repeat(camera, piezo, signed_step, num_piezo_steps)
             if pending is not None:
-                _, prev_b, prev_phi, prev_conv, prev_kp, prev_kps = pending.result()
+                prev_vis, prev_b, prev_phi, prev_conv, prev_kp, prev_kps, prev_g = pending.result()
                 b_list.append(prev_b)
                 phi_list.append(prev_phi)
                 converged_list.append(prev_conv)
                 kappa_p_list.append(prev_kp)
                 kappa_ps_list.append(prev_kps)
+                visibility_list.append(prev_vis)
+                g_list.append(asnumpy(prev_g))
             pending = pool.submit(_process_repeat, images, device)
-        _, last_b, last_phi, last_conv, last_kp, last_kps = pending.result()
+        last_vis, last_b, last_phi, last_conv, last_kp, last_kps, last_g = pending.result()
         b_list.append(last_b)
         phi_list.append(last_phi)
         converged_list.append(last_conv)
         kappa_p_list.append(last_kp)
         kappa_ps_list.append(last_kps)
+        visibility_list.append(last_vis)
+        g_list.append(asnumpy(last_g))
 
     b = np.asarray([asnumpy(x) for x in b_list])
     phi = np.asarray([asnumpy(x) for x in phi_list])
@@ -177,7 +211,9 @@ def measure_phase(camera: Camera,
     return (res,
             np.asarray(converged_list),
             np.asarray(kappa_p_list),
-            np.asarray(kappa_ps_list))
+            np.asarray(kappa_ps_list),
+            np.asarray(visibility_list),
+            np.asarray(g_list))
 
 def _run_once(camera: Camera,
                piezo: KIM101Axis,
@@ -208,13 +244,15 @@ def _run_once(camera: Camera,
     start = time.time()
     try:
         with _armed_camera(camera):
-            sample_res, sample_converged, sample_kappa_p, sample_kappa_ps = measure_phase(
+            (sample_res, sample_converged, sample_kappa_p, sample_kappa_ps,
+             sample_visibility, sample_g) = measure_phase(
                 camera, piezo, step_size, num_piezo_steps, num_averages,
                 device=device, direction=1)
             stage_x.move_by(REFERENCE_X_BY)
             stage_y.move_by(REFERENCE_Y_BY)
 
-            reference_res, reference_converged, reference_kappa_p, reference_kappa_ps = measure_phase(
+            (reference_res, reference_converged, reference_kappa_p, reference_kappa_ps,
+             reference_visibility, reference_g) = measure_phase(
                 camera, piezo, step_size, num_piezo_steps, num_averages,
                 device=device, direction=-1)
     finally:
@@ -266,6 +304,10 @@ def _run_once(camera: Camera,
     out["converged"] = np.stack([asnumpy(sample_converged), asnumpy(reference_converged)])
     out["kappa_p"] = np.stack([asnumpy(sample_kappa_p), asnumpy(reference_kappa_p)])
     out["kappa_ps"] = np.stack([asnumpy(sample_kappa_ps), asnumpy(reference_kappa_ps)])
+    # absolute per-repeat fringe visibility (b/a, see _process_repeat) and
+    # within-sweep contrast roll-off -- the coherence-zone diagnostics.
+    out["visibility"] = np.stack([sample_visibility, reference_visibility])
+    out["g"] = np.stack([sample_g, reference_g])
     return out
 
 def main():
@@ -344,8 +386,13 @@ def main():
                 run_out = _run_once(camera, piezo, stage_x, stage_y,
                                      STEP_SIZE, num_piezo_steps, num_averages, device)
                 runs.append(run_out)
+                # visibility axis 0 = sample/reference; median over
+                # num_averages repeats for a single per-run headline number.
+                vis_sample = np.median(run_out["visibility"][0])
+                vis_reference = np.median(run_out["visibility"][1])
                 print(f"run {run_idx + 1}/{repeats}: sign={run_out['sign']:+d} "
                       f"within_run_scatter={np.degrees(run_out['within_run_scatter']):.4f} deg "
+                      f"visibility(sample/reference)={vis_sample:.4f}/{vis_reference:.4f} "
                       f"time={run_out['time']:.2f}s")
         except Exception as exc:
             error = exc
@@ -404,8 +451,15 @@ def main():
         "degrees, restricted to the more reliable half of the frame -- the "
         "single number to compare between parameter settings. All other "
         "per-run fields ('sign', 'kx', 'converged', ...) have shape (repeats,), "
-        "except 'converged'/'kappa_p'/'kappa_ps' which are "
-        "(repeats, 2, num_averages) with axis 1 = sample/reference."
+        "except 'converged'/'kappa_p'/'kappa_ps'/'visibility' which are "
+        "(repeats, 2, num_averages) with axis 1 = sample/reference, and 'g' "
+        "which is (repeats, 2, num_averages, num_piezo_steps). 'visibility' "
+        "is absolute fringe visibility b/a per repeat (see phase.aia's model) "
+        "-- the coherence-zone diagnostic: track it across a long sequence of "
+        "runs to see whether/how fast the setup is drifting out of the "
+        "manually-set good zone. 'g' is per-frame contrast *within* each "
+        "sweep -- should stay flat; a slope means a sweep walked off the "
+        "envelope mid-acquisition."
     )
     out = {
         "phi": phi,
@@ -422,6 +476,8 @@ def main():
         "time": np.asarray([r["time"] for r in runs]),
         "within_run_scatter": np.asarray([r["within_run_scatter"] for r in runs]),
         "piezo_delta": np.asarray([r["piezo_delta"] for r in runs]),
+        "visibility": np.stack([r["visibility"] for r in runs]),
+        "g": np.stack([r["g"] for r in runs]),
         "kx": np.asarray([r["kx"] for r in runs]),
         "ky": np.asarray([r["ky"] for r in runs]),
         "fx": np.asarray([r["fx"] for r in runs]),
