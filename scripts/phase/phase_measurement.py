@@ -61,12 +61,6 @@ def _acquire_repeat(camera: Camera,
     `measure_phase` overlaps this with the (CPU/GPU-bound) `aia` solve of
     the *previous* repeat in a background thread instead.
     """
-    # dry piezo run forward
-    for i in range(DRY_NUM):
-        piezo.move_by(DRY_STEP)
-        time.sleep(SETTLE_S)
-
-    init_position = piezo.get_position()
 
     images = []
     for step in range(num_piezo_steps):
@@ -78,12 +72,6 @@ def _acquire_repeat(camera: Camera,
 
     images = np.asarray(images)
 
-    # dry piezo run backward
-    for i in range(DRY_NUM):
-        piezo.move_by(-DRY_STEP)
-        time.sleep(SETTLE_S)
-
-    piezo.move_to(init_position)
     return images
 
 def _process_repeat(images: np.ndarray, device: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -113,6 +101,13 @@ def measure_phase(camera: Camera,
     mostly hide behind the ~(2*DRY_NUM + num_piezo_steps)*SETTLE_S seconds
     of hardware time each repeat already takes.
     """
+    init_position = piezo.get_position()
+    
+    # dry piezo run forward
+    for i in range(DRY_NUM):
+        piezo.move_by(DRY_STEP)
+        time.sleep(SETTLE_S)
+    
     phi_list, b_list = [], []
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         pending = None
@@ -131,6 +126,13 @@ def measure_phase(camera: Camera,
     phi = np.asarray([asnumpy(x) for x in phi_list])
 
     res = combine_acquisitions(phi, weights=b, device=device)
+    
+    # dry piezo run backward
+    for i in range(DRY_NUM):
+        piezo.move_by(-DRY_STEP)
+        time.sleep(SETTLE_S)
+
+    piezo.move_to(init_position)
 
     return res.phi, res.mean_resultant
         
