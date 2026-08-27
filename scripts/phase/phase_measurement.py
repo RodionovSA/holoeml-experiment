@@ -20,7 +20,22 @@ from phase.backend import asnumpy, get_array_module, CUPY_AVAILABLE
 from phase.combine import combine_acquisitions, CombinedResult
 
 NUM_PIEZO_STEPS = 20
-STEP_SIZE = 5
+# Return-move step count, per average -- see _return_sweep/measure_phase.
+# Both the sample and reference sweeps walk forward only (never backward
+# mid-measurement); after all num_averages forward repeats, the piezo is
+# walked back num_averages*NUM_PIEZO_RETURN_STEPS moves of STEP_SIZE_BWD, in
+# one dedicated return sweep with its own leading dry run. This need not
+# exactly cancel the forward travel (STEP_SIZE_FWD/STEP_SIZE_BWD are
+# independently calibrated) -- all piezo motion here is relative (move_by),
+# so nothing downstream depends on landing back at an absolute position.
+NUM_PIEZO_RETURN_STEPS = 20
+# STEP_SIZE_FWD/STEP_SIZE_BWD are commanded steps per phase-shift move, one
+# per sweep direction -- the actuator was found to cover different physical
+# distance per commanded step depending on direction, so these are calibrated
+# separately such that one forward move and one backward move cover the same
+# physical distance (a real slip-stick asymmetry, not measurement noise).
+STEP_SIZE_FWD = 5
+STEP_SIZE_BWD = 4
 SETTLE_S = 0.05  # pause after each step before capturing (mechanical settling)
 DRY_NUM = 10
 DRY_STEP = 1
@@ -51,20 +66,20 @@ def _armed_camera(camera):
         yield
     finally:
         camera.disarm()
-        
+
+
 def _acquire_repeat(camera: Camera,
                      piezo: KIM101Axis,
                      step_size: int,
                      num_piezo_steps: int) -> np.ndarray:
     """One phase-shift sweep's worth of hardware I/O for a single repeat: the
-    frame-capture loop, stepping the piezo by `step_size` between frames
-    (`step_size` may be negative -- see `measure_phase`'s `direction`). Dry-
-    run backlash compensation and any position restoration are the caller's
-    responsibility (`measure_phase`/`_run_once`), not this function's. Kept
-    on the caller's thread -- the piezo/camera driver calls aren't meant to
-    be used concurrently -- while `measure_phase` overlaps this with the
-    (CPU/GPU-bound) `aia` solve of the *previous* repeat in a background
-    thread instead.
+    frame-capture loop, stepping the piezo by `step_size` between frames.
+    Dry-run backlash compensation and any position restoration are the
+    caller's responsibility (`measure_phase`/`_run_once`), not this
+    function's. Kept on the caller's thread -- the piezo/camera driver calls
+    aren't meant to be used concurrently -- while `measure_phase` overlaps
+    this with the (CPU/GPU-bound) `aia` solve of the *previous* repeat in a
+    background thread instead.
     """
 
     images = []
@@ -78,6 +93,21 @@ def _acquire_repeat(camera: Camera,
     images = np.asarray(images)
 
     return images
+
+
+def _return_sweep(piezo: KIM101Axis, num_moves: int) -> None:
+    """Walk the piezo back `num_moves` bursts of STEP_SIZE_BWD (backward),
+    preceded by its own DRY_NUM-step backlash-compensation dry run in that
+    direction -- mirrors the forward sweep's leading dry run, since this is
+    a direction reversal. Pure repositioning: no camera capture, since it
+    doesn't contribute additional phase-shift frames to the AIA solve.
+    """
+    for _ in range(DRY_NUM):
+        piezo.move_by(-DRY_STEP)
+        time.sleep(SETTLE_S)
+    for _ in range(num_moves):
+        piezo.move_by(-STEP_SIZE_BWD)
+        time.sleep(SETTLE_S)
 
 def _release_gpu_memory():
     """Return CuPy's pooled (cached, not live) VRAM to the driver.
@@ -130,11 +160,10 @@ def _process_repeat(images: np.ndarray, device: str) -> Tuple[float, np.ndarray,
 
 def measure_phase(camera: Camera,
                   piezo: KIM101Axis,
-                  step_size: int,
                   num_piezo_steps: int,
+                  num_piezo_return_steps: int,
                   num_averages: int,
-                  device: str = "auto",
-                  direction: int = 1) -> Tuple[CombinedResult, np.ndarray, np.ndarray, np.ndarray,
+                  device: str = "auto") -> Tuple[CombinedResult, np.ndarray, np.ndarray, np.ndarray,
                                                 np.ndarray, np.ndarray]:
     """Acquire `num_averages` independent repeats and combine their AIA phase.
 
@@ -144,18 +173,22 @@ def measure_phase(camera: Camera,
     solve. A single-worker pool is enough since only one solve is ever in
     flight; with `device="cuda"` that solve becomes fast enough to mostly
     hide behind the ~(num_piezo_steps-1)*SETTLE_S seconds of hardware time
-    each repeat's sweep already takes. The one-time leading dry run (see
-    `direction` below) is not overlapped -- it runs before the first
-    repeat's acquisition starts.
+    each repeat's sweep already takes. The one-time leading dry run is not
+    overlapped -- it runs before the first repeat's acquisition starts.
 
-    `direction` (+1 or -1) sets which way the piezo sweeps -- AIA solves for
-    arbitrary unknown phase steps and doesn't care about sweep direction, so
-    `_run_once` uses this to sweep the sample forward and the reference
-    backward, making the *commanded* net travel over one full sample+
-    reference run exactly zero without any dedicated return move (see
-    `_run_once`). This function no longer restores its own start position --
-    the caller is responsible for that (and for verifying it), since only the
-    caller knows the balancing direction of the other half of the pair.
+    Every repeat sweeps forward only, at STEP_SIZE_FWD -- AIA solves for
+    arbitrary unknown phase steps regardless of sweep direction, but both the
+    sample and reference measurements (see `_run_once`) now always sweep
+    forward rather than one forward and one backward, so repeats keep
+    walking further forward across `num_averages` exactly as within one
+    call. Once all repeats are done, `_return_sweep` walks the piezo back
+    `num_averages*num_piezo_return_steps` moves of STEP_SIZE_BWD (its own
+    leading dry run included) before this function returns -- a dedicated
+    return move rather than relying on an opposite-direction sweep to cancel
+    it, since STEP_SIZE_FWD/STEP_SIZE_BWD are independently calibrated and
+    generally won't exactly cancel. This function's own start position is
+    therefore never exactly restored (nor does anything depend on that,
+    since all piezo motion is relative -- see module docstring/`_run_once`).
 
     Returns the combined-repeat result alongside the per-repeat AIA
     diagnostics (`converged`, `kappa_p`, `kappa_ps`, `visibility`), each
@@ -165,11 +198,9 @@ def measure_phase(camera: Camera,
     `(num_averages, num_piezo_steps)`, the per-frame contrast *within* each
     sweep -- see `_process_repeat`.
     """
-    signed_step = direction * step_size
-
-    # dry piezo run, same direction as the sweep that follows
+    # dry piezo run, same (forward) direction as the sweep that follows
     for _ in range(DRY_NUM):
-        piezo.move_by(direction * DRY_STEP)
+        piezo.move_by(DRY_STEP)
         time.sleep(SETTLE_S)
 
     phi_list, b_list = [], []
@@ -178,7 +209,7 @@ def measure_phase(camera: Camera,
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         pending = None
         for _ in range(num_averages):
-            images = _acquire_repeat(camera, piezo, signed_step, num_piezo_steps)
+            images = _acquire_repeat(camera, piezo, STEP_SIZE_FWD, num_piezo_steps)
             if pending is not None:
                 prev_vis, prev_b, prev_phi, prev_conv, prev_kp, prev_kps, prev_g = pending.result()
                 b_list.append(prev_b)
@@ -197,6 +228,8 @@ def measure_phase(camera: Camera,
         kappa_ps_list.append(last_kps)
         visibility_list.append(last_vis)
         g_list.append(asnumpy(last_g))
+
+    _return_sweep(piezo, num_averages * num_piezo_return_steps)
 
     b = np.asarray([asnumpy(x) for x in b_list])
     phi = np.asarray([asnumpy(x) for x in phi_list])
@@ -219,21 +252,24 @@ def _run_once(camera: Camera,
                piezo: KIM101Axis,
                stage_x: KinesisMotor,
                stage_y: KinesisMotor,
-               step_size: int,
                num_piezo_steps: int,
+               num_piezo_return_steps: int,
                num_averages: int,
                device: str) -> dict:
     """One full sample+reference measurement: arm the camera, sweep the piezo
-    forward through the sample, move to the reference position and sweep it
-    backward through the reference, then subtract and remove the carrier.
+    forward through the sample and back, move to the reference position and
+    sweep it forward through the reference and back the same way, then
+    subtract and remove the carrier.
 
-    The sample sweeps `direction=+1` and the reference `direction=-1` (see
-    `measure_phase`), so the *commanded* piezo travel over one full run nets
-    to zero without any dedicated return move -- no bulk "move back" loop is
-    needed or issued. Both piezo and stage positions are read at the start
-    and restored (or, for the piezo, verified already restored) in a
-    `finally`, so a failure partway through still leaves the hardware where
-    it started rather than stranded mid-sweep.
+    Both `measure_phase` calls below are now identical: sample and reference
+    both sweep the piezo forward only, then walk it back with a dedicated
+    return sweep (see `measure_phase`/`_return_sweep`) -- neither relies on
+    the other sweeping the opposite direction to cancel its travel, unlike
+    the previous design. Piezo motion here is entirely relative (`move_by`),
+    so no absolute piezo position is tracked or restored; only the stage
+    positions (which use absolute `move_to`) are read at the start and
+    restored in a `finally`, so a failure partway through still leaves the
+    stages where they started rather than stranded at the reference offset.
 
     Returns a dict of host-side (numpy, not cupy) values for this one run,
     ready to be stacked across runs and passed to `np.savez`.
@@ -246,27 +282,23 @@ def _run_once(camera: Camera,
         with _armed_camera(camera):
             (sample_res, sample_converged, sample_kappa_p, sample_kappa_ps,
              sample_visibility, sample_g) = measure_phase(
-                camera, piezo, step_size, num_piezo_steps, num_averages,
-                device=device, direction=1)
+                camera, piezo, num_piezo_steps, num_piezo_return_steps,
+                num_averages, device=device)
             stage_x.move_by(REFERENCE_X_BY)
             stage_y.move_by(REFERENCE_Y_BY)
 
             (reference_res, reference_converged, reference_kappa_p, reference_kappa_ps,
              reference_visibility, reference_g) = measure_phase(
-                camera, piezo, step_size, num_piezo_steps, num_averages,
-                device=device, direction=-1)
+                camera, piezo, num_piezo_steps, num_piezo_return_steps,
+                num_averages, device=device)
     finally:
-        # The sample (+) and reference (-) sweeps above are sized to cancel
-        # exactly, so the commanded counter should already be back at
-        # init_piezo_pos -- move_to() is then a free no-op (see
-        # KIM101Axis.move_to). A nonzero delta means the step arithmetic is
-        # out of balance again and is worth flagging immediately rather than
-        # silently accumulating over a long sequence.
+        # No corrective piezo move here -- all piezo motion is relative
+        # (move_by), and NUM_PIEZO_RETURN_STEPS*STEP_SIZE_BWD isn't expected
+        # to exactly cancel the forward travel (see measure_phase), so there
+        # is no single "correct" absolute position to snap back to anyway.
+        # piezo_delta is kept purely as drift telemetry across a long
+        # --repeats sequence, not compared against an expected value.
         piezo_delta = piezo.get_position() - init_piezo_pos
-        if piezo_delta != 0:
-            print(f"WARNING: piezo commanded position off by {piezo_delta} "
-                  f"steps after sample+reference sweep; expected 0.")
-        piezo.move_to(init_piezo_pos)
         stage_x.move_to(init_x_pos)
         stage_y.move_to(init_y_pos)
 
@@ -293,9 +325,8 @@ def _run_once(camera: Camera,
     out["spread_same"] = diff.spread_same
     out["spread_flipped"] = diff.spread_flipped
     out["time"] = end - start
-    # sample/reference sweep directions are fixed (+1/-1, see measure_phase
-    # calls above), so they're recorded once as batch-level settings in
-    # main()'s out dict rather than duplicated per run here.
+    # net commanded piezo drift over this run -- diagnostic only, not
+    # compared against an expected value (see the `finally` block above).
     out["piezo_delta"] = piezo_delta
     # within-run (across num_averages repeats) scatter of the sample
     # acquisition, as a single scalar figure of merit -- the per-pixel
@@ -321,6 +352,10 @@ def main():
                              "combine per phase measurement.")
     parser.add_argument("--num_piezo_steps", type=int, default=NUM_PIEZO_STEPS,
                         help="Number of piezo phase-shift steps per repeat.")
+    parser.add_argument("--num_piezo_return_steps", type=int, default=NUM_PIEZO_RETURN_STEPS,
+                        help="Number of return piezo steps (STEP_SIZE_BWD each) "
+                             "per average, walked once after all forward repeats "
+                             "to bring the piezo back -- see module docstring.")
     parser.add_argument("--repeats", type=int, default=REPEATS,
                         help="Number of independent sample+reference measurements "
                              "to run back-to-back and combine into one .npz -- "
@@ -330,6 +365,7 @@ def main():
     device = args.device
     num_averages = args.num_averages
     num_piezo_steps = args.num_piezo_steps
+    num_piezo_return_steps = args.num_piezo_return_steps
     repeats = args.repeats
 
     # Pre-flight size check -- phi_runs + weight_runs are the two big arrays
@@ -384,7 +420,8 @@ def main():
         try:
             for run_idx in range(repeats):
                 run_out = _run_once(camera, piezo, stage_x, stage_y,
-                                     STEP_SIZE, num_piezo_steps, num_averages, device)
+                                     num_piezo_steps, num_piezo_return_steps,
+                                     num_averages, device)
                 runs.append(run_out)
                 # visibility axis 0 = sample/reference; median over
                 # num_averages repeats for a single per-run headline number.
@@ -459,7 +496,12 @@ def main():
         "runs to see whether/how fast the setup is drifting out of the "
         "manually-set good zone. 'g' is per-frame contrast *within* each "
         "sweep -- should stay flat; a slope means a sweep walked off the "
-        "envelope mid-acquisition."
+        "envelope mid-acquisition. Both the sample and reference sweeps move "
+        "the piezo forward only (STEP_SIZE_FWD), then walk it back once with "
+        "a dedicated return sweep (num_averages*num_piezo_return_steps moves "
+        "of STEP_SIZE_BWD) -- neither relies on the other sweeping backward "
+        "to cancel it, and 'piezo_delta' (net commanded drift per run) is "
+        "diagnostic telemetry only, not expected to be near zero."
     )
     out = {
         "phi": phi,
@@ -492,12 +534,12 @@ def main():
         "repeats": n,
         "num_averages": num_averages,
         "num_piezo_steps": num_piezo_steps,
-        "step_size": STEP_SIZE,
+        "num_piezo_return_steps": num_piezo_return_steps,
+        "step_size_fwd": STEP_SIZE_FWD,
+        "step_size_bwd": STEP_SIZE_BWD,
         "settle_s": SETTLE_S,
         "dry_num": DRY_NUM,
         "dry_step": DRY_STEP,
-        "sweep_direction_sample": 1,
-        "sweep_direction_reference": -1,
         "exposure_ms": EXPOSURE_MS,
         "gain": GAIN,
         "device": device,
