@@ -1,0 +1,66 @@
+# Shared equipment settings (device serials, filter wheel, polarizer, focus
+# velocities, camera bit depth, monochromator port, kim_serial/kim_channel,
+# etc.) live in instruments/config/config.yaml and are merged in automatically
+# by Config.from_yaml. Only protocol-specific parameters belong in this file.
+
+# ── Wavelength sweep ──────────────────────────────────────────────────────────
+wvl_start: 400.0            # nm
+wvl_stop: 1000.0            # nm
+wvl_num: 121                # number of steps (linspace)
+filter_wvl: 600.0            # nm — long-pass filter inserted above this wavelength
+default_wavelength: 550.0   # nm — resting wavelength between operations
+
+# ── Focus motor (reference position is protocol-specific; kinematics are shared) ─
+default_focus_position: 17.2345   # mm (reference position at 550 nm)
+focus_use_current_position: true  # true = per-wavelength offsets relative to current motor position at sweep start
+
+# ── Brightness calibration ────────────────────────────────────────────────────
+calib_target_brightness: 0.3    # target mean pixel value, normalised 0–1
+calib_tolerance: 0.01            # acceptable deviation from target
+calib_increment: 0.05             # multiplicative step size per iteration (±10%)
+calib_gain_step_db: 0.5          # gain step in dB per iteration
+calib_priority: 'exposure_time'  # exposure_time | gain
+calib_max_steps: 50
+calib_max_exposure_ms: 1000
+calib_initial_exposure_ms: 100
+calib_initial_gain: 0
+calib_num_frames_to_average: 1
+calib_num_frames_to_drop: 1
+calib_delay: 0.0                 # s — delay between captures
+calib_roi_fraction: 0.2          # null = full frame; e.g. 0.5 = central 50%×50% of pixels
+
+# ── Measurements ──────────────────────────────────────────────────────────────
+save_dir: '.'
+num_frames_to_average: 1
+num_frames_to_drop: 1
+capture_delay: 0.0               # s — delay between captures
+exposure_settings_path: 'phasectl/config/exposure_settings.json'
+exposure_settings_xpol_path: 'phasectl/config/exposure_settings_xpol.json'
+exposure_settings_ypol_path: 'phasectl/config/exposure_settings_ypol.json'
+focus_settings_path: 'phasectl/config/focus_settings.json'
+
+# ── Inertial piezo (KIM101 / PIAK10) drive parameters ─────────────────────────
+# kim_serial/kim_channel come from the shared equipment file.
+kim_step_rate: 200            # steps/s
+kim_step_acceleration: 500    # steps/s²
+kim_max_voltage: 125          # V
+
+# ── Phase acquisition (piezo phase-shift sweep) ───────────────────────────────
+num_piezo_steps: 10           # camera frames (and piezo positions) per sweep
+num_piezo_return_steps: 5     # backward moves per average to walk the piezo back
+piezo_step_size_fwd: 5        # commanded steps per forward phase-shift move
+piezo_step_size_bwd: 4        # commanded steps per backward move
+piezo_settle_s: 0.10          # s — pause after each move before capturing
+piezo_dry_num: 10             # backlash-compensation dry-run moves per direction change
+piezo_dry_step: 1             # commanded steps per dry-run move
+num_averages: 1               # independent phase-shift repeats combined per measurement
+
+# ── Reference position (sample stage offset) ──────────────────────────────────
+reference_x_by: 0.0           # mm
+reference_y_by: 0.8           # mm
+
+# ── Image ROI ──────────────────────────────────────────────────────────────────
+roi_x0: 300
+roi_y0: 400
+roi_x1: 3600
+roi_y1: 2600
