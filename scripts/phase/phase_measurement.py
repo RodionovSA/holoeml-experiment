@@ -6,7 +6,7 @@ from pathlib import Path
 import contextlib
 import concurrent.futures
 import time
-from typing import Tuple
+from typing import NamedTuple
 from datetime import datetime
 from dataclasses import asdict
 
@@ -19,7 +19,7 @@ from phase import aia, remove_carrier, subtract_reference
 from phase.backend import asnumpy, get_array_module, CUPY_AVAILABLE
 from phase.combine import combine_acquisitions, CombinedResult
 
-NUM_PIEZO_STEPS = 20
+NUM_PIEZO_STEPS = 10
 # Return-move step count, per average -- see _return_sweep/measure_phase.
 # Both the sample and reference sweeps walk forward only (never backward
 # mid-measurement); after all num_averages forward repeats, the piezo is
@@ -28,14 +28,14 @@ NUM_PIEZO_STEPS = 20
 # exactly cancel the forward travel (STEP_SIZE_FWD/STEP_SIZE_BWD are
 # independently calibrated) -- all piezo motion here is relative (move_by),
 # so nothing downstream depends on landing back at an absolute position.
-NUM_PIEZO_RETURN_STEPS = 20
+NUM_PIEZO_RETURN_STEPS = 4
 # STEP_SIZE_FWD/STEP_SIZE_BWD are commanded steps per phase-shift move, one
 # per sweep direction -- the actuator was found to cover different physical
 # distance per commanded step depending on direction, so these are calibrated
 # separately such that one forward move and one backward move cover the same
 # physical distance (a real slip-stick asymmetry, not measurement noise).
 STEP_SIZE_FWD = 5
-STEP_SIZE_BWD = 4
+STEP_SIZE_BWD = 5
 SETTLE_S = 0.05  # pause after each step before capturing (mechanical settling)
 DRY_NUM = 10
 DRY_STEP = 1
@@ -46,7 +46,7 @@ DRIVE_MAX_VOLTAGE = 125       # V
 
 NUM_AVERAGES = 2
 REPEATS = 1  # number of independent sample+reference measurements per invocation
-MAX_DATASET_GB = 4.0  # pre-flight abort threshold for --repeats
+MAX_DATASET_GB = 6.0  # pre-flight abort threshold for --repeats
 EXPOSURE_MS = 250
 GAIN = 100
 REFERENCE_X_BY = 0.0 # mm
@@ -122,7 +122,41 @@ def _release_gpu_memory():
         import cupy as cp
         cp.get_default_memory_pool().free_all_blocks()
 
-def _process_repeat(images: np.ndarray, device: str) -> Tuple[float, np.ndarray, np.ndarray, bool, float, float, np.ndarray]:
+class RepeatResult(NamedTuple):
+    """What `_process_repeat` hands back to `measure_phase` for one repeat.
+
+    Deliberately narrower than `aia`'s own `AIAResult`: it omits `res.a` (the
+    full (H, W) background map), so that map isn't kept alive on the GPU
+    alongside `b`/`phi` for the duration of the pipelined solve (see
+    `_release_gpu_memory` -- the K2200 also drives the display and already
+    plateaus near 2.9 of its 4 GB across repeated solves).
+    """
+    visibility: float
+    b: np.ndarray
+    phi: np.ndarray
+    converged: bool
+    kappa_p: float
+    kappa_ps: float
+    predicted_rms: float
+    g: np.ndarray
+    delta: np.ndarray
+
+
+class SweepResult(NamedTuple):
+    """What `measure_phase` hands back to `_run_once` for one sample- or
+    reference-side sweep (`num_averages` repeats combined).
+    """
+    combined: CombinedResult
+    converged: np.ndarray
+    kappa_p: np.ndarray
+    kappa_ps: np.ndarray
+    predicted_rms: np.ndarray
+    visibility: np.ndarray
+    g: np.ndarray
+    delta: np.ndarray
+
+
+def _process_repeat(images: np.ndarray, device: str) -> RepeatResult:
     """Run AIA on one repeat's frame stack. Meant to be submitted to a
     background thread (see `measure_phase`) so it overlaps with the next
     repeat's hardware acquisition rather than leaving the piezo/camera idle
@@ -143,12 +177,21 @@ def _process_repeat(images: np.ndarray, device: str) -> Tuple[float, np.ndarray,
     frames from 10% to 90% illuminated area). `res.g`, the per-frame
     contrast within this one sweep, is returned in full -- it should stay
     flat; a slope means the sweep itself walked off the coherence envelope
-    mid-acquisition.
+    mid-acquisition. `res.delta`, the converged per-frame phase step
+    (radians, referenced so `delta[0] = 0`), is likewise returned in full --
+    the direct record of how well this sweep covered the 2*pi phase circle,
+    since `kappa_ps` is only an indirect, field-dependent proxy for that.
+    `res.predicted_rms`, the Chen & Kemao (2019) accuracy-model prediction
+    (radians), is also returned -- it folds `kappa_p`, the fitted residual,
+    and the fringe amplitude into one number in the same units as
+    `within_run_scatter`/`fom_scatter_deg`, so the *predicted* error can be
+    compared offline against the *measured* one.
     """
     res = aia(images, gain="auto", iters=60, device=device)
     print(f"Converged: {res.converged}")
     print(f"Kappa_p: {res.kappa_p}")
     print(f"Kappa_ps: {res.kappa_ps}")
+    print(f"Predicted RMS: {np.degrees(res.predicted_rms):.4f} deg")
     xp = get_array_module(res.a, res.b)
     lit = res.a > 0.5 * xp.max(res.a)
     # index before dividing, not after -- res.a can be exactly 0 in masked/
@@ -156,15 +199,17 @@ def _process_repeat(images: np.ndarray, device: str) -> Tuple[float, np.ndarray,
     # spurious divide-by-zero warning for values discarded by `lit` anyway.
     visibility = float(xp.median(res.b[lit] / res.a[lit])) if bool(xp.any(lit)) else float("nan")
     print(f"Visibility: {visibility:.4f}")
-    return visibility, res.b, res.phi, res.converged, res.kappa_p, res.kappa_ps, res.g
+    return RepeatResult(visibility=visibility, b=res.b, phi=res.phi,
+                         converged=res.converged, kappa_p=res.kappa_p,
+                         kappa_ps=res.kappa_ps, predicted_rms=res.predicted_rms,
+                         g=res.g, delta=res.delta)
 
 def measure_phase(camera: Camera,
                   piezo: KIM101Axis,
                   num_piezo_steps: int,
                   num_piezo_return_steps: int,
                   num_averages: int,
-                  device: str = "auto") -> Tuple[CombinedResult, np.ndarray, np.ndarray, np.ndarray,
-                                                np.ndarray, np.ndarray]:
+                  device: str = "auto") -> SweepResult:
     """Acquire `num_averages` independent repeats and combine their AIA phase.
 
     Each repeat's `aia` solve (`_process_repeat`) runs in a background
@@ -190,13 +235,16 @@ def measure_phase(camera: Camera,
     therefore never exactly restored (nor does anything depend on that,
     since all piezo motion is relative -- see module docstring/`_run_once`).
 
-    Returns the combined-repeat result alongside the per-repeat AIA
-    diagnostics (`converged`, `kappa_p`, `kappa_ps`, `visibility`), each
-    shape `(num_averages,)`, so callers can judge whether `num_piezo_steps`
-    was high enough for every repeat to actually converge and whether the
-    setup is still inside its coherence zone. Also returns `g`, shape
+    Returns a `SweepResult` with the combined-repeat result alongside the
+    per-repeat AIA diagnostics (`converged`, `kappa_p`, `kappa_ps`,
+    `predicted_rms`, `visibility`), each shape `(num_averages,)`, so callers
+    can judge whether `num_piezo_steps` was high enough for every repeat to
+    actually converge and whether the setup is still inside its coherence
+    zone. `predicted_rms` is the Chen & Kemao accuracy-model prediction
+    (radians) -- see `_process_repeat`. Also returns `g`, shape
     `(num_averages, num_piezo_steps)`, the per-frame contrast *within* each
-    sweep -- see `_process_repeat`.
+    sweep, and `delta`, same shape, the converged per-frame phase step
+    (radians, referenced so `delta[0] = 0`) -- see `_process_repeat`.
     """
     # dry piezo run, same (forward) direction as the sweep that follows
     for _ in range(DRY_NUM):
@@ -204,30 +252,28 @@ def measure_phase(camera: Camera,
         time.sleep(SETTLE_S)
 
     phi_list, b_list = [], []
-    converged_list, kappa_p_list, kappa_ps_list = [], [], []
-    visibility_list, g_list = [], []
+    converged_list, kappa_p_list, kappa_ps_list, predicted_rms_list = [], [], [], []
+    visibility_list, g_list, delta_list = [], [], []
+
+    def _collect(r: RepeatResult) -> None:
+        b_list.append(r.b)
+        phi_list.append(r.phi)
+        converged_list.append(r.converged)
+        kappa_p_list.append(r.kappa_p)
+        kappa_ps_list.append(r.kappa_ps)
+        predicted_rms_list.append(r.predicted_rms)
+        visibility_list.append(r.visibility)
+        g_list.append(asnumpy(r.g))
+        delta_list.append(asnumpy(r.delta))
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         pending = None
         for _ in range(num_averages):
             images = _acquire_repeat(camera, piezo, STEP_SIZE_FWD, num_piezo_steps)
             if pending is not None:
-                prev_vis, prev_b, prev_phi, prev_conv, prev_kp, prev_kps, prev_g = pending.result()
-                b_list.append(prev_b)
-                phi_list.append(prev_phi)
-                converged_list.append(prev_conv)
-                kappa_p_list.append(prev_kp)
-                kappa_ps_list.append(prev_kps)
-                visibility_list.append(prev_vis)
-                g_list.append(asnumpy(prev_g))
+                _collect(pending.result())
             pending = pool.submit(_process_repeat, images, device)
-        last_vis, last_b, last_phi, last_conv, last_kp, last_kps, last_g = pending.result()
-        b_list.append(last_b)
-        phi_list.append(last_phi)
-        converged_list.append(last_conv)
-        kappa_p_list.append(last_kp)
-        kappa_ps_list.append(last_kps)
-        visibility_list.append(last_vis)
-        g_list.append(asnumpy(last_g))
+        _collect(pending.result())
 
     _return_sweep(piezo, num_averages * num_piezo_return_steps)
 
@@ -241,12 +287,14 @@ def measure_phase(camera: Camera,
     if res.sign_flips:
         print(f"Sign flips among repeats: {res.sign_flips}")
 
-    return (res,
-            np.asarray(converged_list),
-            np.asarray(kappa_p_list),
-            np.asarray(kappa_ps_list),
-            np.asarray(visibility_list),
-            np.asarray(g_list))
+    return SweepResult(combined=res,
+                        converged=np.asarray(converged_list),
+                        kappa_p=np.asarray(kappa_p_list),
+                        kappa_ps=np.asarray(kappa_ps_list),
+                        predicted_rms=np.asarray(predicted_rms_list),
+                        visibility=np.asarray(visibility_list),
+                        g=np.asarray(g_list),
+                        delta=np.asarray(delta_list))
 
 def _run_once(camera: Camera,
                piezo: KIM101Axis,
@@ -280,15 +328,13 @@ def _run_once(camera: Camera,
     start = time.time()
     try:
         with _armed_camera(camera):
-            (sample_res, sample_converged, sample_kappa_p, sample_kappa_ps,
-             sample_visibility, sample_g) = measure_phase(
+            sample = measure_phase(
                 camera, piezo, num_piezo_steps, num_piezo_return_steps,
                 num_averages, device=device)
             stage_x.move_by(REFERENCE_X_BY)
             stage_y.move_by(REFERENCE_Y_BY)
 
-            (reference_res, reference_converged, reference_kappa_p, reference_kappa_ps,
-             reference_visibility, reference_g) = measure_phase(
+            reference = measure_phase(
                 camera, piezo, num_piezo_steps, num_piezo_return_steps,
                 num_averages, device=device)
     finally:
@@ -305,9 +351,9 @@ def _run_once(camera: Camera,
     # a pixel unreliable in *either* acquisition is unreliable in the
     # difference -- weight both the sign resolution and carrier fit by the
     # joint reliability rather than the sample's alone.
-    weight = sample_res.mean_resultant * reference_res.mean_resultant
+    weight = sample.combined.mean_resultant * reference.combined.mean_resultant
 
-    diff = subtract_reference(sample_res.phi, reference_res.phi, weight, device=device)
+    diff = subtract_reference(sample.combined.phi, reference.combined.phi, weight, device=device)
     print(f"Sign branch: sign={diff.sign:+d} ambiguous={diff.ambiguous} "
           f"spread_same={diff.spread_same:.4f} spread_flipped={diff.spread_flipped:.4f}")
     carrier_res = remove_carrier(diff.phi, weight,
@@ -331,14 +377,16 @@ def _run_once(camera: Camera,
     # within-run (across num_averages repeats) scatter of the sample
     # acquisition, as a single scalar figure of merit -- the per-pixel
     # scatter map itself is not kept, to keep the file size down.
-    out["within_run_scatter"] = float(np.median(asnumpy(sample_res.scatter)))
-    out["converged"] = np.stack([asnumpy(sample_converged), asnumpy(reference_converged)])
-    out["kappa_p"] = np.stack([asnumpy(sample_kappa_p), asnumpy(reference_kappa_p)])
-    out["kappa_ps"] = np.stack([asnumpy(sample_kappa_ps), asnumpy(reference_kappa_ps)])
+    out["within_run_scatter"] = float(np.median(asnumpy(sample.combined.scatter)))
+    out["converged"] = np.stack([asnumpy(sample.converged), asnumpy(reference.converged)])
+    out["kappa_p"] = np.stack([asnumpy(sample.kappa_p), asnumpy(reference.kappa_p)])
+    out["kappa_ps"] = np.stack([asnumpy(sample.kappa_ps), asnumpy(reference.kappa_ps)])
+    out["predicted_rms"] = np.stack([asnumpy(sample.predicted_rms), asnumpy(reference.predicted_rms)])
     # absolute per-repeat fringe visibility (b/a, see _process_repeat) and
     # within-sweep contrast roll-off -- the coherence-zone diagnostics.
-    out["visibility"] = np.stack([sample_visibility, reference_visibility])
-    out["g"] = np.stack([sample_g, reference_g])
+    out["visibility"] = np.stack([sample.visibility, reference.visibility])
+    out["g"] = np.stack([sample.g, reference.g])
+    out["delta"] = np.stack([sample.delta, reference.delta])
     return out
 
 def main():
@@ -488,15 +536,27 @@ def main():
         "degrees, restricted to the more reliable half of the frame -- the "
         "single number to compare between parameter settings. All other "
         "per-run fields ('sign', 'kx', 'converged', ...) have shape (repeats,), "
-        "except 'converged'/'kappa_p'/'kappa_ps'/'visibility' which are "
-        "(repeats, 2, num_averages) with axis 1 = sample/reference, and 'g' "
-        "which is (repeats, 2, num_averages, num_piezo_steps). 'visibility' "
-        "is absolute fringe visibility b/a per repeat (see phase.aia's model) "
-        "-- the coherence-zone diagnostic: track it across a long sequence of "
-        "runs to see whether/how fast the setup is drifting out of the "
-        "manually-set good zone. 'g' is per-frame contrast *within* each "
-        "sweep -- should stay flat; a slope means a sweep walked off the "
-        "envelope mid-acquisition. Both the sample and reference sweeps move "
+        "except 'converged'/'kappa_p'/'kappa_ps'/'predicted_rms'/'visibility' "
+        "which are (repeats, 2, num_averages) with axis 1 = sample/reference, "
+        "and 'g' which is (repeats, 2, num_averages, num_piezo_steps). "
+        "'visibility' is absolute fringe visibility b/a per repeat (see "
+        "phase.aia's model) -- the coherence-zone diagnostic: track it "
+        "across a long sequence of runs to see whether/how fast the setup "
+        "is drifting out of the manually-set good zone. 'predicted_rms' is "
+        "the Chen & Kemao (2019, Eq. 28/40) predicted RMS phase error, in "
+        "RADIANS -- compare it against the measured 'within_run_scatter' "
+        "(also radians) or 'fom_scatter_deg' (degrees -- note the different "
+        "unit); agreement means the AIA noise model explains the run, a "
+        "measured value much larger than predicted means something outside "
+        "that model (drift, vibration, piezo nonlinearity) dominates. 'g' is "
+        "per-frame contrast *within* each sweep -- should stay flat; a slope "
+        "means a sweep walked off the envelope mid-acquisition. 'delta' "
+        "(same shape as 'g') is the AIA-converged per-frame phase step in "
+        "radians, referenced so delta[..., 0] = 0 -- the direct record of "
+        "how well each sweep covered the 2*pi phase circle (kappa_ps is "
+        "only an indirect, field-dependent proxy for that); not to be "
+        "confused with 'piezo_delta' below, the net *commanded* piezo drift "
+        "per run. Both the sample and reference sweeps move "
         "the piezo forward only (STEP_SIZE_FWD), then walk it back once with "
         "a dedicated return sweep (num_averages*num_piezo_return_steps moves "
         "of STEP_SIZE_BWD) -- neither relies on the other sweeping backward "
@@ -519,7 +579,9 @@ def main():
         "within_run_scatter": np.asarray([r["within_run_scatter"] for r in runs]),
         "piezo_delta": np.asarray([r["piezo_delta"] for r in runs]),
         "visibility": np.stack([r["visibility"] for r in runs]),
+        "predicted_rms": np.stack([r["predicted_rms"] for r in runs]),
         "g": np.stack([r["g"] for r in runs]),
+        "delta": np.stack([r["delta"] for r in runs]),
         "kx": np.asarray([r["kx"] for r in runs]),
         "ky": np.asarray([r["ky"] for r in runs]),
         "fx": np.asarray([r["fx"] for r in runs]),

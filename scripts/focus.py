@@ -48,10 +48,29 @@ from instruments.camera import Camera, CameraStream, open_camera
 from instruments.camera.utils import calculate_focus_measure
 from instruments.config import load_equipment
 from instruments.kinesismotor import KinesisMotor
+from phase import measure_frame_visibility
+from phase.backend import asnumpy, to_device
 
 METRIC_CROP_SIZE = 512     # px, central region used for the focus/brightness readout
 METRIC_PERIOD_S = 0.1      # how often the background metric worker recomputes
 PROFILE_PERIOD_S = 2.0     # how often --profile prints a timing summary
+
+# Fixed ROI for the fringe-visibility readout -- deliberately NOT the
+# zoom-following metric window above. phase.measure_frame_visibility is only
+# comparable against itself at one fixed ROI (see its docstring: the Hann
+# window and real object structure make the returned number proportional to
+# b/a with a constant that depends on the ROI), so this must match the ROI
+# used by scripts/phase/phase_measurement.py for the two readings to mean the
+# same thing. Keep these four in sync with that file.
+IMAGE_SHAPE_X0 = 300
+IMAGE_SHAPE_Y0 = 400
+IMAGE_SHAPE_X1 = 3600
+IMAGE_SHAPE_Y1 = 2600
+VIS_DEVICE = "auto"    # "auto" | "cpu" | "cuda" -- see phase.backend.to_device
+VIS_PERIOD_S = 0.2     # min gap between visibility recomputes (own thread --
+                       # the CPU path costs ~0.8s at the full ROI, far above
+                       # METRIC_PERIOD_S, so it must not share that thread)
+VIS_MIN_SIZE = 64      # px; below this the carrier/DC bins are meaningless
 
 # ── Focus app defaults ──────────────────────────────────────────────────────
 INITIAL_EXPOSURE_MS = 30    # live-view starting exposure
@@ -88,6 +107,14 @@ class FocusApp:
         self.timer = None
         self._stop_metric = threading.Event()
         self._metric_thread = None
+
+        # Fixed-ROI fringe-visibility readout (see the IMAGE_SHAPE_* constants).
+        self._vis_roi = self._resolve_vis_roi()
+        self._vis_device = VIS_DEVICE  # may downgrade to "cpu" if the GPU path errors
+        self._vis_error_reported = False
+        self._visibility = float("nan")
+        self._stop_visibility = threading.Event()
+        self._visibility_thread = None
 
         if self.profile:
             self._profile_reset()
@@ -297,13 +324,80 @@ class FocusApp:
                 self._brightness = float(crop.mean())
             self._stop_metric.wait(METRIC_PERIOD_S)
 
+    # ── background visibility worker (fixed ROI, separate thread) ──────────
+
+    def _resolve_vis_roi(self) -> tuple[int, int, int, int] | None:
+        """Clamp the IMAGE_SHAPE_* constants to this camera's actual frame size.
+
+        The constants are copied by hand from phase_measurement.py, which may
+        target a different camera/ROI than whatever this app's config opens --
+        clamp rather than crash, and disable the readout (return None) if the
+        clamped region is too small for the carrier/DC bins to mean anything.
+        """
+        x0 = max(0, min(IMAGE_SHAPE_X0, self.frame_w))
+        x1 = max(0, min(IMAGE_SHAPE_X1, self.frame_w))
+        y0 = max(0, min(IMAGE_SHAPE_Y0, self.frame_h))
+        y1 = max(0, min(IMAGE_SHAPE_Y1, self.frame_h))
+        if x1 - x0 < VIS_MIN_SIZE or y1 - y0 < VIS_MIN_SIZE:
+            print(f"[focus] visibility ROI ({x0},{y0})-({x1},{y1}) is smaller than "
+                  f"VIS_MIN_SIZE={VIS_MIN_SIZE}px after clamping to the "
+                  f"{self.frame_w}x{self.frame_h} frame -- visibility readout disabled.")
+            return None
+        return x0, y0, x1, y1
+
+    def _visibility_window(self, frame: np.ndarray) -> np.ndarray:
+        """Fixed-ROI crop for the visibility readout -- does NOT track zoom/pan,
+        unlike `_metric_window`. See the IMAGE_SHAPE_* constants' comment."""
+        x0, y0, x1, y1 = self._vis_roi
+        return frame[y0:y1, x0:x1, 0]
+
+    def _compute_visibility(self, frame: np.ndarray) -> float:
+        roi = self._visibility_window(frame)
+        stack = to_device(roi[None], device=self._vis_device, dtype=np.float32)
+        return float(asnumpy(measure_frame_visibility(stack))[0])
+
+    def _visibility_loop(self) -> None:
+        if self._vis_roi is None:
+            return
+        # Warm-up: the first CuPy call pays for FFT-plan creation (~0.6s at the
+        # full ROI); pay that cost once here, before the first real reading,
+        # rather than as a stall on some arbitrary later tick. Also surfaces a
+        # device problem immediately at startup instead of mid-session.
+        try:
+            self._compute_visibility(np.zeros((self.frame_h, self.frame_w, 1), dtype=np.float32))
+        except Exception as exc:
+            print(f"[focus] visibility warm-up on device={self._vis_device!r} failed "
+                  f"({exc}); falling back to cpu.")
+            self._vis_device = "cpu"
+
+        while not self._stop_visibility.is_set():
+            frame = self.stream.get_latest_frame()
+            if frame is not None:
+                try:
+                    self._visibility = self._compute_visibility(frame)
+                except Exception as exc:
+                    self._visibility = float("nan")
+                    if not self._vis_error_reported:
+                        print(f"[focus] visibility computation failed (device="
+                              f"{self._vis_device!r}): {exc}.")
+                        self._vis_error_reported = True
+                    # The K2200 also drives the display -- a mid-session GPU
+                    # failure (e.g. VRAM pressure) shouldn't lose the readout
+                    # for the rest of the session; fall back to CPU once and
+                    # keep looping.
+                    if self._vis_device != "cpu":
+                        print("[focus] falling back to cpu for the visibility readout.")
+                        self._vis_device = "cpu"
+            self._stop_visibility.wait(VIS_PERIOD_S)
+
     # ── live view loop ─────────────────────────────────────────────────────
 
     def _overlay_text(self) -> str:
         position = "moving..." if self._moving else f"{self._position:.4f} mm"
         return (f"position: {position}   zoom: {self.zoom:4.1f}x\n"
                 f"focus:    {self._focus_metric:8.2f}\n"
-                f"bright:   {self._brightness:8.1f}")
+                f"bright:   {self._brightness:8.1f}\n"
+                f"vis:      {self._visibility:8.4f}")
 
     def _on_tick(self) -> None:
         t0 = time.perf_counter()
@@ -392,6 +486,7 @@ class FocusApp:
         if self.timer is not None:
             self.timer.stop()
         self._stop_metric.set()
+        self._stop_visibility.set()
         self.stream.stop()
 
     def run(self) -> None:
@@ -399,6 +494,9 @@ class FocusApp:
 
         self._metric_thread = threading.Thread(target=self._metric_loop, daemon=True)
         self._metric_thread.start()
+
+        self._visibility_thread = threading.Thread(target=self._visibility_loop, daemon=True)
+        self._visibility_thread.start()
 
         self.timer = self.fig.canvas.new_timer(interval=33)  # ~30 fps target
         self.timer.add_callback(self._on_tick)
