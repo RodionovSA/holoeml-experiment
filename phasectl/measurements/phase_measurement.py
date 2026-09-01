@@ -2,28 +2,21 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+import concurrent.futures
+from dataclasses import dataclass, replace
 
 import numpy as np
 
-from phase import (CombinedResult, PhaseConfig, PhaseResult, PhaseSolver,
-                    combine_acquisitions, remove_carrier)
+from phase import (CarrierResult, CombinedResult, DifferenceResult, PhaseConfig,
+                    PhaseResult, PhaseSolver, combine_acquisitions, remove_carrier,
+                    subtract_reference)
 from phase.backend import CUPY_AVAILABLE, asnumpy, get_array_module
 
 from .context import MeasurementContext
 
 
 def _release_gpu_memory() -> None:
-    """Return CuPy's pooled (cached, not live) VRAM to the driver.
-
-    Called after every repeat's solve (see `solve_stack`): once
-    `PhaseSolver.fit` returns, only the small `PhaseResult` fields are still
-    referenced, so the pool's cached blocks for everything else the solve
-    allocated (the full frame stack, internal working arrays) can be freed
-    immediately rather than sitting cached until the next allocation happens
-    to reuse them. A no-op on a CPU-only install.
-    """
+    """Return CuPy's pooled (cached, not live) VRAM to the driver. No-op without CuPy."""
     if CUPY_AVAILABLE:
         import cupy as cp
         cp.get_default_memory_pool().free_all_blocks()
@@ -37,6 +30,17 @@ def solve_stack(images: np.ndarray, phase_config: PhaseConfig | None = None,
     `phase_config` selects. Defaults to a plain `PhaseConfig()` (method="aia").
     """
     result = PhaseSolver(phase_config or PhaseConfig(), device=device).fit(images).result_
+    result.print_summary()
+    return result
+
+
+def _solve_and_release(images: np.ndarray, phase_config: PhaseConfig, device: str) -> PhaseResult:
+    """One repeat's full post-acquisition work: solve, bring to host, release GPU memory.
+
+    The unit submitted to the background thread in `measure_phase`'s
+    acquire/solve pipelining.
+    """
+    result = solve_stack(images, phase_config, device).to_device("cpu")
     _release_gpu_memory()
     return result
 
@@ -58,27 +62,13 @@ def _single_acquisition(phi: np.ndarray, weight: np.ndarray, device: str) -> Com
 class SweepResult:
     """`measure_phase`'s result for one sample- or reference-side sweep.
 
-    `combined` is the merged phase map (see `measure_phase`). Everything
-    else is per-repeat, first axis length `num_averages`, preserved from
-    each repeat's `PhaseResult` rather than discarded once combined -- so
-    convergence/fit-quality/drift across repeats stays inspectable.
-    `method_param` is kept as a plain list (not stacked): it's opaque and
-    method-specific (e.g. an aia-only `AIAParam` for `method="aia"`), not a
-    fixed-shape array, and is **not** host-converted -- it may still be
-    device-resident; convert its fields yourself if you need to save it.
-    Every other field (including `combined`'s) is always a plain host numpy
-    array regardless of `device` -- safe to hand straight to `ctx.save_npz`
-    -- and is the full per-repeat data, not reduced, so memory scales with
-    `num_averages`.
+    `combined` is the merged phase map, left on `device`. `results` is
+    every repeat's full `PhaseResult`, already moved to host. `phase_config`
+    is what produced them.
     """
     combined: CombinedResult
-    a: np.ndarray
-    b: np.ndarray
-    delta: np.ndarray
-    g: np.ndarray
-    alpha: np.ndarray
-    reconstruction_error: np.ndarray
-    method_param: list[Any]
+    results: list[PhaseResult]
+    phase_config: PhaseConfig
 
 
 def measure_phase(ctx: MeasurementContext,
@@ -87,59 +77,98 @@ def measure_phase(ctx: MeasurementContext,
                    device: str = "auto") -> SweepResult:
     """Acquire `num_averages` forward repeats, solve each, and combine them.
 
-    One leading `dry_run(+1)` covers the whole forward run (repeats keep walking
-    further forward, same as within one `acquire_stack` call); afterward a
+    One leading `dry_run(+1)` covers the whole forward run; afterward a
     `dry_run(-1)` + `return_sweep` covering `num_averages * num_piezo_return_steps`
-    moves brings the piezo back. Each repeat is solved independently via
-    `solve_stack`; their phase/modulation maps are merged with
-    `combine_acquisitions`.
+    moves brings the piezo back. Each repeat's solve runs in a background
+    thread while the next repeat's acquisition proceeds on the main thread,
+    so the piezo/camera aren't idle during the solve; each repeat is then
+    moved to host and released before its result is collected, so peak VRAM
+    stays bounded regardless of `num_averages`.
 
-    Returns a `SweepResult`: the combined phase map alongside every repeat's
-    full `PhaseResult` fields, so nothing from the solve is thrown away.
-    Always the same shape regardless of `num_averages` -- `1` goes through
-    the same standardized path as `n >= 2` (see `_single_acquisition`), just
-    with every per-repeat field having length 1.
+    Returns a `SweepResult` -- nothing pre-extracted, take what you need.
     """
     cfg = ctx.config
     n = num_averages if num_averages is not None else cfg.num_averages
+    phase_config = phase_config or PhaseConfig()
 
     ctx.dry_run(+1)
-    results = [solve_stack(ctx.acquire_stack(direction=+1), phase_config, device)
-               for _ in range(n)]
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        pending = None
+        for _ in range(n):
+            images = ctx.acquire_stack(direction=+1)
+            if pending is not None:
+                results.append(pending.result())
+            pending = pool.submit(_solve_and_release, images, phase_config, device)
+        results.append(pending.result())
 
     ctx.dry_run(-1)
     ctx.return_sweep(cfg.num_piezo_return_steps * n)
 
-    xp = get_array_module(results[0].phi)
-    phi = xp.stack([r.phi for r in results])
-    b = xp.stack([r.b for r in results])
-
     if n == 1:
-        combined = _single_acquisition(phi[0], b[0], device)
+        combined = _single_acquisition(results[0].phi, results[0].b, device)
     else:
+        phi = [r.phi for r in results]
+        b = [r.b for r in results]
         combined = combine_acquisitions(phi, weights=b, device=device)
         if combined.sign_flips:
             print(f"Sign flips among repeats: {combined.sign_flips}")
+    _release_gpu_memory()
 
-    # Host conversion happens here, at measure_phase's boundary -- not inside
-    # solve_stack/_single_acquisition, which stay device-consistent like the
-    # library's own functions. Everything else in phasectl (ctx.save_npz
-    # included) assumes plain numpy, so this is where hardware/ctx-driven
-    # acquisition needs to cross back into that world. Doing this *before*
-    # the GPU-memory release (matching the old script's own asnumpy-then-
-    # release order) also means the release can reclaim these result fields
-    # too, not just the combine/carrier-removal step's own transients.
-    result = SweepResult(
-        combined=CombinedResult(phi=asnumpy(combined.phi), scatter=asnumpy(combined.scatter),
-                                 mean_resultant=asnumpy(combined.mean_resultant),
-                                 n=combined.n, sign_flips=combined.sign_flips),
-        a=asnumpy(xp.stack([r.a for r in results])),
-        b=asnumpy(b),
-        delta=asnumpy(xp.stack([r.delta for r in results])),
-        g=asnumpy(xp.stack([r.g for r in results])),
-        alpha=asnumpy(xp.stack([r.alpha for r in results])),
-        reconstruction_error=np.asarray([r.reconstruction_error for r in results]),
-        method_param=[r.method_param for r in results],
+    return SweepResult(combined=combined, results=results, phase_config=phase_config)
+
+
+def _combined_to_host(c: CombinedResult) -> CombinedResult:
+    return CombinedResult(phi=asnumpy(c.phi), scatter=asnumpy(c.scatter),
+                           mean_resultant=asnumpy(c.mean_resultant), n=c.n, sign_flips=c.sign_flips)
+
+
+@dataclass
+class PhaseMeasurement:
+    """One full sample+reference phase measurement.
+
+    `diff` is the sign-resolved sample-minus-reference phase, before carrier
+    removal; `carrier` is the final object phase with carrier/defocus/piston
+    removed. `weight` is the joint sample*reference reliability map used for
+    both steps. `sample`/`reference` are the two `SweepResult`s the phase
+    came from. Every array here, including `sample`/`reference`'s
+    `combined`, is host (numpy) regardless of `device`.
+    """
+    diff: DifferenceResult
+    carrier: CarrierResult
+    weight: np.ndarray
+    sample: SweepResult
+    reference: SweepResult
+
+
+def full_phase_measurement(ctx: MeasurementContext,
+                            phase_config: PhaseConfig | None = None,
+                            num_averages: int | None = None,
+                            device: str = "auto") -> PhaseMeasurement:
+    """Measure the sample, measure the reference, subtract, remove the carrier.
+
+    Arms the camera, runs `measure_phase` for the sample, moves to the
+    reference position (`ctx.stage_reference`, restored even on failure) and
+    runs `measure_phase` again for the reference, then resolves the sign
+    branch and removes the residual carrier. Returns a `PhaseMeasurement`
+    with every array brought back to host.
+    """
+    with ctx.armed():
+        sample = measure_phase(ctx, phase_config, num_averages, device)
+        with ctx.stage_reference():
+            reference = measure_phase(ctx, phase_config, num_averages, device)
+
+    weight = sample.combined.mean_resultant * reference.combined.mean_resultant
+    diff = subtract_reference(sample.combined.phi, reference.combined.phi, weight, device=device)
+    carrier = remove_carrier(diff.phi, weight, defocus=True, refine_iters=10,
+                              n_blocks=10, device=device)
+
+    result = PhaseMeasurement(
+        diff=replace(diff, phi=asnumpy(diff.phi)),
+        carrier=replace(carrier, phi=asnumpy(carrier.phi)),
+        weight=asnumpy(weight),
+        sample=replace(sample, combined=_combined_to_host(sample.combined)),
+        reference=replace(reference, combined=_combined_to_host(reference.combined)),
     )
     _release_gpu_memory()
     return result
