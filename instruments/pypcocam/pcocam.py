@@ -67,6 +67,11 @@ class PcoCamera(Camera):
     supports_gain = False
     supports_black_level = False
 
+    #: PTC-calibrated noise model registry key; see instruments/camera/noise.py
+    #: and docs/photon_transfer_pco.md. Calibrated in fast scan mode; read
+    #: noise there is an upper bound (see NOISE_MODELS["pco"]).
+    noise_vendor = "pco"
+
     #: Depth of the ring buffer used by `arm()` / `_get_single_frame()`.
     RING_BUFFER_SIZE = 4
 

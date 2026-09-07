@@ -47,6 +47,10 @@ class ThorlabsCamera(Camera):
     _MIN_GAIN = 0
     _MAX_GAIN = 480
 
+    #: PTC-calibrated noise model registry key; see instruments/camera/noise.py
+    #: and docs/photon_transfer.md. Calibrated at gain index 0 only.
+    noise_vendor = "thorlabs"
+
     def __init__(self,
                  sdk: TLCameraSDK,
                  serial_number: str,

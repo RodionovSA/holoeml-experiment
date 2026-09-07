@@ -217,3 +217,28 @@ sigma_shot       = sqrt(S / K)                      [DN]
 sigma_fpn        = P_N * S                          [DN]     -- fixed, does not average down
 S_electrons      = S_DN * K
 ```
+
+## Using These Constants from Code
+
+The constants and estimators above are implemented in
+[`instruments/camera/noise.py`](../instruments/camera/noise.py) as `NOISE_MODELS["thorlabs"]`,
+importable with no vendor SDK (for offline acquisition planning) and exposed as
+`camera.noise` on any connected `ThorlabsCamera`. If this camera is re-calibrated, update
+both that module and this doc.
+
+```python
+from instruments.camera import get_noise_model
+
+n = get_noise_model("thorlabs")
+n.frames_for_error(180, target_pct=0.5)          # ~88, matches the worked example above
+n.relative_error_intensity(500, n_frames=10)     # eps_int, %
+
+# from real frames -- a stack, not a pre-reduced mean; dark subtraction and
+# the frame-count both handled for you (any axis, e.g. frame_axis=1 for the
+# PTC scripts' own (level, frame, H, W) layout)
+n.error_from_frames(bright_stack, dark=dark_stack, frame_axis=0)
+```
+
+See [`scripts/test/noise_model_check.py`](../scripts/test/noise_model_check.py), which
+regenerates the tables above from `NoiseModel` and checks them against these published
+numbers.

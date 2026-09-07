@@ -318,3 +318,30 @@ sigma_shot       = sqrt(S / K)                      [DN]
 sigma_fpn        = P_N * S                          [DN]     -- fixed, does not average down
 S_electrons      = S_DN * K
 ```
+
+## Using These Constants from Code
+
+The constants and estimators above are implemented in
+[`instruments/camera/noise.py`](../instruments/camera/noise.py) as `NOISE_MODELS["pco"]`,
+importable with no vendor SDK (for offline acquisition planning) and exposed as
+`camera.noise` on any connected `PcoCamera`. It carries the read-noise-is-an-upper-bound
+caveat above as `read_noise_is_upper_bound=True`. If this camera is re-calibrated
+(ideally with the dedicated read-noise sweep this doc is still missing), update both that
+module and this doc.
+
+```python
+from instruments.camera import get_noise_model
+
+n = get_noise_model("pco")
+n.frames_for_error(3000, target_pct=0.5)         # ~43, matches the worked example above
+n.relative_error_intensity(20000, n_frames=10)   # eps_int, %  (conservative -- see caveat)
+
+# from real frames -- drops straight into this doc's own (level, frame, H,
+# W) acquisition layout (e.g. signal_dn / dark_dn as loaded in
+# pco_noise_analysis.ipynb) via frame_axis=1
+n.error_from_frames(signal_dn, dark=dark_dn, frame_axis=1)
+```
+
+See [`scripts/test/noise_model_check.py`](../scripts/test/noise_model_check.py), which
+regenerates the tables above from `NoiseModel` and checks them against these published
+numbers.

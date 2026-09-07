@@ -18,10 +18,13 @@ from __future__ import annotations
 
 import threading
 import time
+import warnings
 from abc import ABC, abstractmethod
 from collections import deque
 
 import numpy as np
+
+from instruments.camera.noise import NOISE_MODELS, NoiseModel
 
 
 class Camera(ABC):
@@ -37,6 +40,11 @@ class Camera(ABC):
     supports_gain: bool = True
     #: Whether this camera exposes a black-level control.
     supports_black_level: bool = True
+    #: Registry key into ``instruments.camera.noise.NOISE_MODELS`` for this
+    #: camera's PTC-calibrated noise model (``"thorlabs"`` / ``"pco"``).
+    #: ``None`` means no calibration is registered yet; accessing ``.noise``
+    #: then raises.
+    noise_vendor: str | None = None
 
     def __init__(self) -> None:
         self.out_bit_depth = np.float32
@@ -119,6 +127,35 @@ class Camera(ABC):
     def image_width(self) -> int:
         """Frame width in pixels."""
         return self.image_shape[1]
+
+    @property
+    def noise(self) -> NoiseModel:
+        """PTC-calibrated noise model for this camera (see
+        ``instruments/camera/noise.py`` and the ``docs/photon_transfer*.md``
+        write-ups it's transcribed from).
+
+        Looked up from ``NOISE_MODELS`` by ``noise_vendor``; raises
+        ``NotImplementedError`` if this camera class has no calibration
+        registered. Warns if ``pixel_max_value`` doesn't match the value the
+        calibration was measured at -- every DN-referred constant in the
+        model is scaled to that ADC full-scale, so a mismatch (e.g. a
+        changed bit-depth setting) means the model no longer applies as-is.
+        """
+        if self.noise_vendor is None:
+            raise NotImplementedError(
+                f"{type(self).__name__} has no registered noise model "
+                f"(noise_vendor is None); see instruments/camera/noise.py"
+            )
+        model = NOISE_MODELS[self.noise_vendor]
+        if self.pixel_max_value != model.pixel_max:
+            warnings.warn(
+                f"{type(self).__name__}.pixel_max_value ({self.pixel_max_value}) does not "
+                f"match the noise model's calibrated pixel_max ({model.pixel_max}) -- "
+                f"DN-referred noise constants (read_noise_dn, prnu_factor, etc.) were "
+                f"measured at a different ADC full-scale and may not apply as-is.",
+                stacklevel=2,
+            )
+        return model
 
     def set_gain(self, gain: int) -> None:
         """Set sensor gain. Raises NotImplementedError if ``supports_gain`` is False."""
