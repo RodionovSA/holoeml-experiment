@@ -39,6 +39,8 @@ class EquipmentConfig:
     """Serial number string of the spectrometer."""
     filterwheel_address: str = ""
     """VISA / USB address of the Newport filter wheel (e.g. ``'USB0::...'``)."""
+    shutter_port: str = ""
+    """Serial port of the Thorlabs SC30 shutter controller (e.g. ``'COM3'``)."""
 
     # ── Monochromator ────────────────────────────────────────────────────────
     monochromator_port: str = ""

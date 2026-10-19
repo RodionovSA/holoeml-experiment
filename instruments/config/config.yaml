@@ -13,7 +13,7 @@ powermeter_serial: '5003886'
 spectrometer_serial: 'SR600410'
 
 # ── Monochromator ─────────────────────────────────────────────────────────────
-monochromator_port: COM3                 # leave empty to be prompted at runtime
+monochromator_port: COM4                 # leave empty to be prompted at runtime
 monochromator_grating_mode: VIS Grating  # VIS Grating | IR Grating | Switch Mode
 
 # ── Camera ────────────────────────────────────────────────────────────────────
@@ -45,3 +45,6 @@ filterwheel_timeout: 2000  # ms
 filterwheel_empty_pos: 1   # open / no filter
 longpass_pos: 3            # long-pass filter
 black_pos: 4                # beam block
+
+# ── Shutters (Thorlabs SC30, 2 channels) ──────────────────────────────────────
+shutter_port: COM3  # USB virtual COM port (VID 1313 / PID 100E)

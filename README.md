@@ -29,6 +29,7 @@ will reuse the same shared `instruments/` drivers as amplitude once built out.
 | Polarizer | Polarizer on Thorlabs K10CR1 cage rotation stage | USB (Kinesis) |
 | Precision piezo z-stage | Thorlabs CT1P cage-compatible z-axis stage, integrated piezo driver | USB (Kinesis .NET) |
 | Filter wheel | Newport USFW-100 (6-position) | USB (VISA) |
+| Shutters | Thorlabs SC30 2-channel controller + 2× SHB05 shutters | USB (virtual COM, pyserial) |
 | Power meter | Thorlabs PM400 | USB (VISA / TLPM) |
 | Spectrometer | Ocean Optics (OceanDirect-compatible) | USB |
 
@@ -152,7 +153,7 @@ application.
    ```
    C:\Program Files\Thorlabs\Scientific Imaging\ThorCam\Scientific Camera Interfaces\
    ```
-3. Copy **only** the `Python Toolkit` and `Native Toolkit` sub-folders into the project as `thorcam-sdk/`:
+3. Copy **only** the `Python Toolkit` and `Native Toolkit` sub-folders into the project as `instruments/pythorcam/thorcam-sdk/`:
    ```
    thorcam-sdk/
      Python Toolkit/
@@ -295,6 +296,7 @@ instruments/            # Shared hardware drivers, used by all experiments
     monochromator_3modes/
       monochromator_3modes.ino  # Arduino firmware (AccelStepper)
   filterwheel/           # Newport USFW-100 driver via PyVISA
+  shutter/               # ShutterControl — Thorlabs SC30 shutter controller, ASCII commands over COM port
   kinesismotor/          # KinesisMotor — Kinesis stage control (focus + polarizer), via Kinesis .NET/pythonnet
   precisionpiezo/        # PrecisionPiezoCT1P — CT1P integrated piezo z-stage, via Kinesis .NET/pythonnet
   powermeter/            # PM400 — Thorlabs optical power meter (TLPM ctypes driver)
