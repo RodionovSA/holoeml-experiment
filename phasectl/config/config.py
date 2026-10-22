@@ -166,6 +166,14 @@ class Config:
     black_pos: int = 4
     """Filter wheel position (1–6) that blocks all light (beam block)."""
 
+    # ── Shutters (Thorlabs SC30) ──────────────────────────────────────────────
+    shutter_port: str = ""
+    """Serial port of the Thorlabs SC30 shutter controller (e.g. ``'COM3'``)."""
+    shutter_ref_channel: int = 1
+    """SC30 channel (1–2) whose shutter blocks the reference arm."""
+    shutter_sample_channel: int = 2
+    """SC30 channel (1–2) whose shutter blocks the sample arm."""
+
     # ── Brightness calibration ────────────────────────────────────────────────
     calib_target_brightness: float = 0.5
     """Target mean pixel value (normalised 0–1) for brightness calibration."""

@@ -2,7 +2,8 @@
 
 ``Instruments`` owns the connections (and their teardown) for whichever
 devices it was asked to open -- camera, monochromator, filter wheel, focus
-motor, polarizer, sample stage x/y, and/or the KIM101 inertial piezo. It has
+motor, polarizer, sample stage x/y, the KIM101 inertial piezo, and/or the
+SC30 arm shutters. It has
 no knowledge of :class:`~phasectl.config.Config` measurement policy -- that
 lives in :class:`~phasectl.control.Control`. Devices are opened selectively,
 via the ``devices`` argument to :meth:`Instruments.from_config`; each
@@ -28,11 +29,12 @@ if TYPE_CHECKING:
     from instruments.kinesismotor import KinesisMotor
     from instruments.monochromator.mono import MonochromatorControl
     from instruments.inertialpiezo import KIM101, KIM101Axis
+    from instruments.shutter import ShutterControl
 
     from phasectl.config import Config
 
 DEVICE_NAMES = ("camera", "mono", "filterwheel", "focus", "polarizer",
-                "stage_x", "stage_y", "kim")
+                "stage_x", "stage_y", "kim", "shutter")
 ALL_DEVICES = frozenset(DEVICE_NAMES)
 
 _ALIASES = {"piezo": "kim"}
@@ -91,6 +93,11 @@ def _open_kim(config: Config, stack: contextlib.ExitStack) -> KIM101:
     return stack.enter_context(KIM101(config.kim_serial))
 
 
+def _open_shutter(config: Config, stack: contextlib.ExitStack) -> ShutterControl:
+    from instruments.shutter import ShutterControl
+    return stack.enter_context(ShutterControl(config.shutter_port))
+
+
 _OPENERS = {
     "camera": _open_camera,
     "mono": _open_mono,
@@ -100,6 +107,7 @@ _OPENERS = {
     "stage_x": _open_stage_x,
     "stage_y": _open_stage_y,
     "kim": _open_kim,
+    "shutter": _open_shutter,
 }
 
 
@@ -191,6 +199,10 @@ class Instruments:
     @property
     def piezo(self) -> KIM101Axis:
         return self._require("piezo")
+
+    @property
+    def shutter(self) -> ShutterControl:
+        return self._require("shutter")
 
     def close(self) -> None:
         """Close every opened device. Safe to call more than once."""

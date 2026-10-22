@@ -94,6 +94,12 @@ class EquipmentConfig:
     black_pos: int = 4
     """Filter wheel position (1-6) that blocks all light (beam block)."""
 
+    # ── Shutters (Thorlabs SC30) ──────────────────────────────────────────
+    shutter_ref_channel: int = 1
+    """SC30 channel (1-2) whose shutter blocks the reference arm."""
+    shutter_sample_channel: int = 2
+    """SC30 channel (1-2) whose shutter blocks the sample arm."""
+
     @classmethod
     def from_yaml(cls, path: str | Path) -> EquipmentConfig:
         with open(path, encoding="utf-8") as f:

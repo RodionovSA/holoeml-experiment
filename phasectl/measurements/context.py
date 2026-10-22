@@ -4,8 +4,9 @@ Each future routine module in :mod:`phasectl.measurements` will receive a
 single :class:`MeasurementContext` instead of the two collaborators
 (:class:`~phasectl.devices.Instruments`, :class:`~phasectl.config.Config`)
 individually. It exposes device shortcuts and the primitives every phase
-routine needs: piezo phase-shift sweeps, backlash-compensation dry runs,
-stage referencing, and NPZ saving.
+routine needs: wavelength/filter setting, piezo phase-shift sweeps,
+backlash-compensation dry runs, stage referencing, reference/sample arm
+shutters, and NPZ saving.
 """
 
 from __future__ import annotations
@@ -91,6 +92,10 @@ class MeasurementContext:
     def piezo(self):
         return self.instruments.piezo
 
+    @property
+    def shutter(self):
+        return self.instruments.shutter
+
     def armed(self):
         return self.instruments.armed()
 
@@ -119,6 +124,67 @@ class MeasurementContext:
             return
         self.stage_x.set_velocity(max_velocity=v, acceleration=a)
         self.stage_y.set_velocity(max_velocity=v, acceleration=a)
+
+    # ------------------------------------------------------------------ #
+    # Wavelength primitives                                                #
+    # ------------------------------------------------------------------ #
+
+    def init_mono(self) -> None:
+        """Boot, home and select the configured grating on the monochromator.
+        Required once after connecting, before :meth:`set_wavelength`."""
+        self.mono.initialize_arduino()
+        self.mono.home_motor()
+        self.mono.select_grating_mode(mode=self.config.monochromator_grating_mode)
+
+    def set_filterwheel_for_wvl(self, wvl: float) -> None:
+        """Insert the long-pass filter at/above ``filter_wvl``, else the open window."""
+        cfg = self.config
+        fw = self.filterwheel
+        fw_pos = cfg.longpass_pos if wvl >= cfg.filter_wvl else cfg.filterwheel_empty_pos
+        if fw.get_position() != fw_pos:
+            fw.set_position(fw_pos)
+
+    def set_wavelength(self, wvl: float) -> None:
+        """Move the monochromator to *wvl* (nm) and set the matching filter."""
+        self.mono.set_wavelength(wvl)
+        self.set_filterwheel_for_wvl(wvl)
+
+    # ------------------------------------------------------------------ #
+    # Arm shutter primitives                                               #
+    # ------------------------------------------------------------------ #
+
+    def get_arms(self) -> tuple[bool, bool]:
+        """Return ``(ref_open, sample_open)`` -- the actual shutter states."""
+        cfg = self.config
+        return (self.shutter.is_open(cfg.shutter_ref_channel),
+                self.shutter.is_open(cfg.shutter_sample_channel))
+
+    def set_arms(self, ref: bool, sample: bool) -> None:
+        """Open (``True``) or block (``False``) the reference and sample arms.
+
+        Switches the SC30 to manual mode first if needed (a no-op apart from
+        unlocking when it already is); blocks until both shutters confirm.
+        """
+        cfg = self.config
+        self.shutter.set_mode('manual')
+        self.shutter.set_open(cfg.shutter_ref_channel, ref)
+        self.shutter.set_open(cfg.shutter_sample_channel, sample)
+
+    @contextlib.contextmanager
+    def arms(self, ref: bool, sample: bool):
+        """Set the arm shutters for the duration of the block, then restore
+        their previous states -- even if the block raises. E.g. a
+        reference-arm-only intensity frame::
+
+            with ctx.arms(ref=True, sample=False):
+                ref_img = ctx.capture()
+        """
+        previous = self.get_arms()
+        try:
+            self.set_arms(ref, sample)
+            yield
+        finally:
+            self.set_arms(*previous)
 
     # ------------------------------------------------------------------ #
     # Piezo phase-shift primitives                                        #

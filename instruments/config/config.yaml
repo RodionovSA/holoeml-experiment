@@ -48,3 +48,5 @@ black_pos: 4                # beam block
 
 # ── Shutters (Thorlabs SC30, 2 channels) ──────────────────────────────────────
 shutter_port: COM3  # USB virtual COM port (VID 1313 / PID 100E)
+shutter_ref_channel: 1     # blocks the reference arm
+shutter_sample_channel: 2  # blocks the sample arm

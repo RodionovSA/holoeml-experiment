@@ -46,8 +46,8 @@ kim_step_acceleration: 500    # steps/s²
 kim_max_voltage: 125          # V
 
 # ── Phase acquisition (piezo phase-shift sweep) ───────────────────────────────
-num_piezo_steps: 10           # camera frames (and piezo positions) per sweep
-num_piezo_return_steps: 5     # backward moves per average to walk the piezo back
+num_piezo_steps: 16           # camera frames (and piezo positions) per sweep
+num_piezo_return_steps: 8     # backward moves per average to walk the piezo back
 piezo_step_size_fwd: 5        # commanded steps per forward phase-shift move
 piezo_step_size_bwd: 4        # commanded steps per backward move
 piezo_settle_s: 0.10          # s — pause after each move before capturing
